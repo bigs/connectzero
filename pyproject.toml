@@ -1,10 +1,11 @@
 [project]
 name = "mcts-connect-four"
 version = "0.1.0"
-description = "Add your description here"
+description = "Connect Four agent using Monte Carlo Tree Search"
 readme = "README.md"
 requires-python = ">=3.12"
 dependencies = [
+    "jax>=0.8.1",
     "numpy>=2.3.5",
     "torch>=2.9.1",
 ]
