@@ -9,3 +9,9 @@ dependencies = [
     "numpy>=2.3.5",
     "torch>=2.9.1",
 ]
+
+[dependency-groups]
+dev = [
+    "pylance>=0.39.0",
+    "ruff>=0.14.6",
+]
