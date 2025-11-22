@@ -147,6 +147,38 @@ def select_leaf(
     return final_state.current_node_index, final_state.next_action
 
 
+def expand_node(
+    tree: ArenaTree,
+    leaf_index: jnp.ndarray,
+    action_to_expand: jnp.ndarray,
+) -> ArenaTree:
+    """
+    Expand the tree at the given leaf index and action.
+    """
+    # Don't compute this in every iteration, dummy
+    batch_range = jnp.arange(tree.children_index.shape[0])
+    new_node_idx = tree.next_node_index
+
+    next_children_index = tree.children_index.at[
+        batch_range, leaf_index, action_to_expand
+    ].set(new_node_idx)
+
+    next_parents = tree.parents.at[batch_range, new_node_idx].set(leaf_index)
+
+    next_action_from_parent = tree.action_from_parent.at[batch_range, new_node_idx].set(
+        action_to_expand
+    )
+
+    next_next_node_index = new_node_idx + 1
+
+    return tree._replace(
+        children_index=next_children_index,
+        parents=next_parents,
+        action_from_parent=next_action_from_parent,
+        next_node_index=next_next_node_index,
+    )
+
+
 def run_mcts_search(
     board_state: jnp.ndarray, num_simulations: int, key: jnp.ndarray
 ) -> tuple[ArenaTree, jnp.ndarray]:
@@ -159,7 +191,7 @@ def run_mcts_search(
         leaf_index, action_to_expand = select_leaf(tree, board_state, subkey)
         print(f"Leaf index: {leaf_index}")
         print(f"Action to expand: {action_to_expand}")
-        # return tree, leaf_index
+        tree = expand_node(tree, leaf_index, action_to_expand)
 
     # Stub return value
     return tree, action_to_expand
