@@ -65,16 +65,34 @@ class SelectState(NamedTuple):
     current_node_index: jnp.ndarray  # [B], dtype=int32
     next_action: jnp.ndarray  # [B], dtype=int32
     trajectory_active: jnp.ndarray  # [B], dtype=bool
+    board_state: jnp.ndarray  # [B, 6, 7], dtype=int32
+    turn_count: jnp.ndarray  # [B], dtype=int32
     key: jnp.ndarray  # PRNG key
 
     @classmethod
-    def init(cls, B: int, key: jnp.ndarray):
+    def init(cls, B: int, key: jnp.ndarray, board_state: jnp.ndarray):
         return cls(
             current_node_index=jnp.zeros((B,), dtype=jnp.int32),
             next_action=jnp.zeros((B,), dtype=jnp.int32),
             trajectory_active=jnp.ones((B,), dtype=jnp.bool_),
+            board_state=board_state,
+            turn_count=jnp.zeros((B,), dtype=jnp.int32),
             key=key,
         )
+
+
+def play_move(
+    board_state: jnp.ndarray, action: jnp.ndarray, player_id: int
+) -> jnp.ndarray:
+    """
+    Play the action (column) on the board for each item in the batch.
+    Assumes 0=Bottom, 5=Top. Fills from 0 upwards.
+    """
+    batch_range = jnp.arange(board_state.shape[0])
+    selected_columns = board_state[batch_range, :, action]
+    target_rows = jnp.argmax(selected_columns == 0, axis=1)
+
+    return board_state.at[batch_range, target_rows, action].set(player_id)
 
 
 def select_leaf(
@@ -131,17 +149,36 @@ def select_leaf(
         new_trajectory_active = state.trajectory_active & child_exists
 
         # Iterate
+        new_board_state = jnp.where(
+            # Only update board if we are taking a step deeper (child exists)
+            new_trajectory_active[:, None, None],
+            play_move(
+                state.board_state, best_action, (state.turn_count % 2) + 1
+            ),  # Player 1 or 2
+            state.board_state,
+        )
+
+        new_turn_count = jnp.where(
+            new_trajectory_active,
+            state.turn_count + 1,
+            state.turn_count,
+        )
+
         return state._replace(
             current_node_index=new_current_node_index,
             next_action=new_next_action,
             trajectory_active=new_trajectory_active,
+            board_state=new_board_state,
+            turn_count=new_turn_count,
             key=key,
         )
 
     final_state = jax.lax.while_loop(
         cond_fun=lambda state: jnp.any(state.trajectory_active),
         body_fun=select_leaf_body,
-        init_val=SelectState.init(B=tree.children_index.shape[0], key=key),
+        init_val=SelectState.init(
+            B=tree.children_index.shape[0], key=key, board_state=board_state
+        ),
     )
 
     return final_state.current_node_index, final_state.next_action
@@ -155,7 +192,6 @@ def expand_node(
     """
     Expand the tree at the given leaf index and action.
     """
-    # Don't compute this in every iteration, dummy
     batch_range = jnp.arange(tree.children_index.shape[0])
     new_node_idx = tree.next_node_index
 
