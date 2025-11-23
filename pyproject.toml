@@ -10,8 +10,17 @@ dependencies = [
     "torch>=2.9.1",
 ]
 
+[tool.pyrefly]
+project-includes = [
+    "**/*.py*",
+    "**/*.ipynb",
+]
+
 [dependency-groups]
 dev = [
     "pylance>=0.39.0",
+    "pyrefly>=0.42.3",
     "ruff>=0.14.6",
 ]
+
+[tool]

@@ -82,11 +82,12 @@ class SelectState(NamedTuple):
 
 
 def play_move(
-    board_state: jnp.ndarray, action: jnp.ndarray, player_id: int
+    board_state: jnp.ndarray, action: jnp.ndarray, player_id: int | jnp.ndarray
 ) -> jnp.ndarray:
     """
     Play the action (column) on the board for each item in the batch.
     Assumes 0=Bottom, 5=Top. Fills from 0 upwards.
+    player_id can be a scalar or a batch array.
     """
     batch_range = jnp.arange(board_state.shape[0])
     selected_columns = board_state[batch_range, :, action]
