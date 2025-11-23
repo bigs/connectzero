@@ -103,7 +103,10 @@ def select_leaf(
     """
 
     def compute_ucb_values(
-        tree: ArenaTree, current_node_index: jnp.ndarray, key: jnp.ndarray
+        tree: ArenaTree,
+        current_node_index: jnp.ndarray,
+        board_state: jnp.ndarray,
+        key: jnp.ndarray,
     ) -> jnp.ndarray:
         """
         Compute the UCB values for each action.
@@ -117,6 +120,11 @@ def select_leaf(
             key, shape=(batch_size, action_space_size), minval=0.0, maxval=1.0
         )
 
+        # Mask full columns
+        random_values = jnp.where(
+            jnp.any(board_state == 0, axis=1), random_values, -jnp.inf
+        )
+
         return random_values
 
     # Don't compute this in every iteration, dummy
@@ -125,7 +133,9 @@ def select_leaf(
     def select_leaf_body(state: SelectState) -> SelectState:
         key, subkey = jax.random.split(state.key)
 
-        ucb_values = compute_ucb_values(tree, state.current_node_index, subkey)
+        ucb_values = compute_ucb_values(
+            tree, state.current_node_index, state.board_state, subkey
+        )
         best_action = jnp.argmax(ucb_values, axis=1)
 
         child_indices = tree.children_index[
@@ -157,7 +167,6 @@ def select_leaf(
             ),  # Player 1 or 2
             state.board_state,
         )
-
         new_turn_count = jnp.where(
             new_trajectory_active,
             state.turn_count + 1,
@@ -227,7 +236,10 @@ def run_mcts_search(
         leaf_index, action_to_expand = select_leaf(tree, board_state, subkey)
         print(f"Leaf index: {leaf_index}")
         print(f"Action to expand: {action_to_expand}")
+
         tree = expand_node(tree, leaf_index, action_to_expand)
+
+        # Next step is to simulate the games from the leaf nodes
 
     # Stub return value
     return tree, action_to_expand
