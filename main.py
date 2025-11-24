@@ -220,17 +220,16 @@ def select_leaf(
         new_trajectory_active = state.trajectory_active & child_exists
 
         # Iterate
-        # Iterate
         new_board_state = jnp.where(
-            # Update board if we are active, even if we are about to stop (leaf found)
-            state.trajectory_active[:, None, None],
+            # Only update when we keep traversing deeper
+            new_trajectory_active[:, None, None],
             play_move(
                 state.board_state, best_action, (state.turn_count % 2) + 1
             ),  # Player 1 or 2
             state.board_state,
         )
         new_turn_count = jnp.where(
-            state.trajectory_active,
+            new_trajectory_active,
             state.turn_count + 1,
             state.turn_count,
         )
