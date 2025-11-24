@@ -308,6 +308,7 @@ class SimulateState(NamedTuple):
     board_state: jnp.ndarray
     turn_count: jnp.ndarray
     trajectory_active: jnp.ndarray
+    winners: jnp.ndarray
 
 
 def simulate_rollouts(
@@ -364,6 +365,7 @@ def simulate_rollouts(
             board_state=new_board_state,
             turn_count=new_turn_count,
             trajectory_active=new_trajectory_active,
+            winner=winner,
         )
 
     # Initial check
@@ -373,15 +375,18 @@ def simulate_rollouts(
     final_state = jax.lax.while_loop(
         cond_fun=lambda state: jnp.any(state.trajectory_active),
         body_fun=simulate_body,
-        init_val=SimulateState(key, board_state, turn_count, trajectory_active),
+        init_val=SimulateState(key, board_state, turn_count, trajectory_active, winner),
     )
 
-    final_winner = check_winner(final_state.board_state)
-    # Parent perspective
-    parent_player = (turn_count % 2) + 1
+    # Parent perspective. Who made this move? Subtle change in the logic
+    # avoids returning the player who will move next, rather than the one
+    # who just made the move.
+    parent_player = 2 - (turn_count % 2)
 
     return jnp.where(
-        final_winner == parent_player, 1, jnp.where(final_winner == 0, 0, -1)
+        final_state.winner == parent_player,
+        1,
+        jnp.where(final_state.winner == 0, 0, -1),
     )
 
 
