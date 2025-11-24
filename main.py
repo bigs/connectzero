@@ -281,7 +281,6 @@ def expand_node(
     )
 
     next_next_node_index = new_node_idx + 1
-    assert next_next_node_index <= tree.children_index.shape[1], "Tree is full"
 
     new_tree = tree._replace(
         children_index=next_children_index,
@@ -403,6 +402,7 @@ def run_mcts_search(
             player_who_plays,
         )
         sim_turns = select_result.turn_count + 1
+        key, subkey = jax.random.split(key)
         results = simulate_rollouts(subkey, sim_board, sim_turns)
         print(f"Results by action: {results}")
 
