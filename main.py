@@ -31,9 +31,6 @@ class ArenaTree(NamedTuple):
     # The action taken to get to this node from the parent.
     action_from_parent: jnp.ndarray  # [B, N], dtype=int32
 
-    # The board state at this leaf of exploration.
-    board_state: jnp.ndarray  # [B, 6, 7], dtype=int32
-
     ### Statistics
     # Visit counts (N) for each action from this node.
     children_visits: jnp.ndarray  # [B, N, A], dtype=int32
@@ -53,7 +50,6 @@ class ArenaTree(NamedTuple):
             children_index=jnp.full((B, N, A), -1, dtype=jnp.int32),
             parents=jnp.full((B, N), -1, dtype=jnp.int32),
             action_from_parent=jnp.full((B, N), -1, dtype=jnp.int32),
-            board_state=jnp.zeros((B, 6, 7), dtype=jnp.int32),
             children_visits=jnp.zeros((B, N, A), dtype=jnp.int32),
             children_values=jnp.zeros((B, N, A), dtype=jnp.float32),
             # Start at 1, because 0 is reserved for the Root
@@ -381,13 +377,12 @@ def simulate_rollouts(
 
 def run_mcts_search(
     board_state: jnp.ndarray, num_simulations: int, key: jnp.ndarray
-) -> tuple[ArenaTree, jnp.ndarray]:
+) -> ArenaTree:
     """
     Run MCTS search on the given tree and board state.
     """
     batch_size = board_state.shape[0]
     tree = ArenaTree.init(B=batch_size, N=num_simulations + 1, A=7)
-    tree = tree._replace(board_state=board_state)
     for _ in range(num_simulations):
         key, subkey = jax.random.split(key)
         # Select
@@ -412,8 +407,7 @@ def run_mcts_search(
         results = simulate_rollouts(subkey, sim_board, sim_turns)
         print(f"Results by action: {results}")
 
-    # Return the tree and the board state
-    return tree, tree.board_state
+    return tree
 
 
 def main():
@@ -425,10 +419,9 @@ def main():
 
     key = jax.random.PRNGKey(0)
 
-    tree, board_at_leaf = run_mcts_search(
+    tree = run_mcts_search(
         board_state=starting_board_state, num_simulations=10, key=key
     )
-    print(board_at_leaf)
 
 
 if __name__ == "__main__":
