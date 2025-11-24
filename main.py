@@ -39,7 +39,7 @@ class ArenaTree(NamedTuple):
     # Divide by visits to get Q.
     children_values: jnp.ndarray  # [B, N, A], dtype=float32
 
-    # --- Allocator State ---
+    ### Allocator State
     # Tracks the next free slot in the 'N' dimension for each game.
     next_node_index: jnp.ndarray  # [B], dtype=int32
 
