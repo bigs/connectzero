@@ -31,7 +31,7 @@ class ArenaTree(NamedTuple):
     # The action taken to get to this node from the parent.
     action_from_parent: jnp.ndarray  # [B, N], dtype=int32
 
-    # The board state at this node.
+    # The board state at this leaf of exploration.
     board_state: jnp.ndarray  # [B, 6, 7], dtype=int32
 
     ### Statistics
@@ -263,7 +263,7 @@ def expand_node(
     tree: ArenaTree,
     leaf_index: jnp.ndarray,
     action_to_expand: jnp.ndarray,
-) -> ArenaTree:
+) -> tuple[ArenaTree, jnp.ndarray]:
     """
     Expand the tree at the given leaf index and action.
     """
@@ -281,13 +281,15 @@ def expand_node(
     )
 
     next_next_node_index = new_node_idx + 1
+    assert next_next_node_index <= tree.children_index.shape[1], "Tree is full"
 
-    return tree._replace(
+    new_tree = tree._replace(
         children_index=next_children_index,
         parents=next_parents,
         action_from_parent=next_action_from_parent,
         next_node_index=next_next_node_index,
     )
+    return new_tree, new_node_idx
 
 
 class SimulateState(NamedTuple):
@@ -389,7 +391,7 @@ def run_mcts_search(
         print(f"Action to expand: {select_result.action_to_expand}")
 
         # Expand
-        tree = expand_node(
+        tree, new_node_idx = expand_node(
             tree, select_result.leaf_index, select_result.action_to_expand
         )
 
