@@ -308,7 +308,7 @@ class SimulateState(NamedTuple):
     board_state: jnp.ndarray
     turn_count: jnp.ndarray
     trajectory_active: jnp.ndarray
-    winners: jnp.ndarray
+    winner: jnp.ndarray
 
 
 def simulate_rollouts(
