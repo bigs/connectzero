@@ -31,6 +31,9 @@ class ArenaTree(NamedTuple):
     # The action taken to get to this node from the parent.
     action_from_parent: jnp.ndarray  # [B, N], dtype=int32
 
+    # The board state at this node.
+    board_state: jnp.ndarray  # [B, N, 6, 7], dtype=int32
+
     ### Statistics
     # Visit counts (N) for each action from this node.
     children_visits: jnp.ndarray  # [B, N, A], dtype=int32
@@ -50,6 +53,7 @@ class ArenaTree(NamedTuple):
             children_index=jnp.full((B, N, A), -1, dtype=jnp.int32),
             parents=jnp.full((B, N), -1, dtype=jnp.int32),
             action_from_parent=jnp.full((B, N), -1, dtype=jnp.int32),
+            board_state=jnp.zeros((B, 6, 7), dtype=jnp.int32),
             children_visits=jnp.zeros((B, N, A), dtype=jnp.int32),
             children_values=jnp.zeros((B, N, A), dtype=jnp.float32),
             # Start at 1, because 0 is reserved for the Root
@@ -71,12 +75,13 @@ class SelectState(NamedTuple):
 
     @classmethod
     def init(cls, B: int, key: jnp.ndarray, board_state: jnp.ndarray):
+        turn_count = jnp.count_nonzero(board_state, axis=(1, 2))
         return cls(
             current_node_index=jnp.zeros((B,), dtype=jnp.int32),
             next_action=jnp.zeros((B,), dtype=jnp.int32),
             trajectory_active=jnp.ones((B,), dtype=jnp.bool_),
             board_state=board_state,
-            turn_count=jnp.zeros((B,), dtype=jnp.int32),
+            turn_count=turn_count,
             key=key,
         )
 
@@ -96,9 +101,64 @@ def play_move(
     return board_state.at[batch_range, target_rows, action].set(player_id)
 
 
+def check_winner(board_state: jnp.ndarray) -> jnp.ndarray:
+    """
+    Check for a winner in the batch of boards.
+
+    Args:
+        board_state: [B, 6, 7] array (0=Empty, 1=P1, 2=P2)
+
+    Returns:
+        [B] array where:
+        0 = No winner yet / Draw (distinguish later if needed)
+        1 = Player 1 won
+        2 = Player 2 won
+    """
+
+    # Initialize (4 filters, 1 input channel, 4 height, 4 width)
+    filters = jnp.zeros((4, 1, 4, 4), dtype=jnp.int32)
+    # Horizontal Filter
+    filters = filters.at[0, 0, 0, :].set(1)
+    # Vertical Filter
+    filters = filters.at[1, 0, :, 0].set(1)
+    # Diagonal Filter (Top-left to Bottom-right)
+    filters = filters.at[2, 0].set(jnp.eye(4, dtype=jnp.int32))
+    # Anti-Diagonal Filter (Top-right to Bottom-left)
+    filters = filters.at[3, 0].set(jnp.fliplr(jnp.eye(4, dtype=jnp.int32)))
+
+    player_one = jnp.where(board_state == 1, 1, 0)
+    player_two = jnp.where(board_state == 2, 1, 0)
+
+    input_tensor_one = jnp.expand_dims(player_one, axis=1)
+    input_tensor_two = jnp.expand_dims(player_two, axis=1)
+
+    one_output = jax.lax.conv_general_dilated(
+        lhs=input_tensor_one,
+        rhs=filters,
+        window_strides=(1, 1),
+        padding=[(0, 3), (0, 3)],
+    )
+    two_output = jax.lax.conv_general_dilated(
+        lhs=input_tensor_two,
+        rhs=filters,
+        window_strides=(1, 1),
+        padding=[(0, 3), (0, 3)],
+    )
+    one_win = jnp.any(one_output == 4, axis=(1, 2, 3))
+    two_win = jnp.any(two_output == 4, axis=(1, 2, 3))
+    return jnp.where(one_win, 1, jnp.where(two_win, 2, 0))
+
+
+class SelectResult(NamedTuple):
+    leaf_index: jnp.ndarray  # [B], dtype=int32
+    action_to_expand: jnp.ndarray  # [B], dtype=int32
+    board_state: jnp.ndarray  # [B, 6, 7], dtype=int32
+    turn_count: jnp.ndarray  # [B], dtype=int32
+
+
 def select_leaf(
     tree: ArenaTree, board_state: jnp.ndarray, key: jnp.ndarray
-) -> tuple[jnp.ndarray, jnp.ndarray]:
+) -> SelectResult:
     """
     Select a leaf node to expand.
     """
@@ -191,7 +251,12 @@ def select_leaf(
         ),
     )
 
-    return final_state.current_node_index, final_state.next_action
+    return SelectResult(
+        leaf_index=final_state.current_node_index,
+        action_to_expand=final_state.next_action,
+        board_state=final_state.board_state,
+        turn_count=final_state.turn_count,
+    )
 
 
 def expand_node(
@@ -232,6 +297,7 @@ def run_mcts_search(
     Run MCTS search on the given tree and board state.
     """
     tree = ArenaTree.init(B=1, N=num_simulations + 1, A=7)
+    tree = tree._replace(board_state=jnp.full((B, 6, 7), board_state))
     for _ in range(num_simulations):
         key, subkey = jax.random.split(key)
         leaf_index, action_to_expand = select_leaf(tree, board_state, subkey)
