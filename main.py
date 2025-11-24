@@ -290,6 +290,27 @@ def expand_node(
     )
 
 
+def simulate_rollouts(
+    key: jnp.ndarray,
+    board_state: jnp.ndarray,
+    turn_count: jnp.ndarray,
+) -> jnp.ndarray:
+    """
+    Simulate random games from the given board states to completion.
+
+    Args:
+        key: JAX PRNG key for random moves.
+        board_state: [B, 6, 7] array of board states.
+        turn_count: [B] array of turn counts.
+
+    Returns:
+        [B] array of results (+1, -1, 0) from the perspective of the player
+        who made the move leading to the leaf node.
+    """
+    # TODO: Implement simulation loop
+    return jnp.zeros(board_state.shape[0], dtype=jnp.int32)
+
+
 def run_mcts_search(
     board_state: jnp.ndarray, num_simulations: int, key: jnp.ndarray
 ) -> tuple[ArenaTree, jnp.ndarray]:
@@ -300,11 +321,13 @@ def run_mcts_search(
     tree = tree._replace(board_state=jnp.full((B, 6, 7), board_state))
     for _ in range(num_simulations):
         key, subkey = jax.random.split(key)
-        leaf_index, action_to_expand = select_leaf(tree, board_state, subkey)
-        print(f"Leaf index: {leaf_index}")
-        print(f"Action to expand: {action_to_expand}")
+        select_result = select_leaf(tree, board_state, subkey)
+        print(f"Leaf index: {select_result.leaf_index}")
+        print(f"Action to expand: {select_result.action_to_expand}")
 
-        tree = expand_node(tree, leaf_index, action_to_expand)
+        tree = expand_node(
+            tree, select_result.leaf_index, select_result.action_to_expand
+        )
 
         # Next step is to simulate the games from the leaf nodes
 
