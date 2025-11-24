@@ -364,9 +364,12 @@ def simulate_rollouts(
     )
 
     final_winner = check_winner(final_state.board_state)
-    leaf_mover = 2 - (turn_count % 2)
+    # Parent perspective
+    parent_player = (turn_count % 2) + 1
 
-    return jnp.where(final_winner == leaf_mover, 1, jnp.where(final_winner == 0, 0, -1))
+    return jnp.where(
+        final_winner == parent_player, 1, jnp.where(final_winner == 0, 0, -1)
+    )
 
 
 def run_mcts_search(
