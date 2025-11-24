@@ -32,7 +32,7 @@ class ArenaTree(NamedTuple):
     action_from_parent: jnp.ndarray  # [B, N], dtype=int32
 
     # The board state at this node.
-    board_state: jnp.ndarray  # [B, N, 6, 7], dtype=int32
+    board_state: jnp.ndarray  # [B, 6, 7], dtype=int32
 
     ### Statistics
     # Visit counts (N) for each action from this node.
@@ -91,12 +91,12 @@ def play_move(
 ) -> jnp.ndarray:
     """
     Play the action (column) on the board for each item in the batch.
-    Assumes 0=Bottom, 5=Top. Fills from 0 upwards.
+    Assumes 0=Top, 5=Bottom. Fills from 5 downwards.
     player_id can be a scalar or a batch array.
     """
     batch_range = jnp.arange(board_state.shape[0])
     selected_columns = board_state[batch_range, :, action]
-    target_rows = jnp.argmax(selected_columns == 0, axis=1)
+    target_rows = jnp.sum(selected_columns == 0, axis=1) - 1
 
     return board_state.at[batch_range, target_rows, action].set(player_id)
 
@@ -220,16 +220,17 @@ def select_leaf(
         new_trajectory_active = state.trajectory_active & child_exists
 
         # Iterate
+        # Iterate
         new_board_state = jnp.where(
-            # Only update board if we are taking a step deeper (child exists)
-            new_trajectory_active[:, None, None],
+            # Update board if we are active, even if we are about to stop (leaf found)
+            state.trajectory_active[:, None, None],
             play_move(
                 state.board_state, best_action, (state.turn_count % 2) + 1
             ),  # Player 1 or 2
             state.board_state,
         )
         new_turn_count = jnp.where(
-            new_trajectory_active,
+            state.trajectory_active,
             state.turn_count + 1,
             state.turn_count,
         )
@@ -317,11 +318,13 @@ def run_mcts_search(
     """
     Run MCTS search on the given tree and board state.
     """
-    tree = ArenaTree.init(B=1, N=num_simulations + 1, A=7)
-    tree = tree._replace(board_state=jnp.full((B, 6, 7), board_state))
+    batch_size = board_state.shape[0]
+    tree = ArenaTree.init(B=batch_size, N=num_simulations + 1, A=7)
+    tree = tree._replace(board_state=board_state)
     for _ in range(num_simulations):
         key, subkey = jax.random.split(key)
         select_result = select_leaf(tree, board_state, subkey)
+        tree = tree._replace(board_state=select_result.board_state)
         print(f"Leaf index: {select_result.leaf_index}")
         print(f"Action to expand: {select_result.action_to_expand}")
 
@@ -331,20 +334,21 @@ def run_mcts_search(
 
         # Next step is to simulate the games from the leaf nodes
 
-    # Stub return value
-    return tree, action_to_expand
+    # Return the tree and the board state
+    return tree, tree.board_state
 
 
 def main():
     # Initialize a board with two moves in the middle column
     starting_board_state = jnp.zeros((6, 7), dtype=jnp.int32)
-    starting_board_state = starting_board_state.at[0, 3].set(1)
-    starting_board_state = starting_board_state.at[1, 3].set(2)
+    starting_board_state = starting_board_state.at[5, 3].set(1)
+    starting_board_state = starting_board_state.at[4, 3].set(2)
+    starting_board_state = jnp.expand_dims(starting_board_state, axis=0)
 
-    key = jax.random.PRNGKey(1)
+    key = jax.random.PRNGKey(0)
 
     tree, board_at_leaf = run_mcts_search(
-        board_state=starting_board_state, num_simulations=800, key=key
+        board_state=starting_board_state, num_simulations=10, key=key
     )
     print(board_at_leaf)
 
