@@ -74,8 +74,8 @@ class SelectState(NamedTuple):
         turn_count = jnp.count_nonzero(board_state, axis=(1, 2))
         return cls(
             current_node_index=jnp.zeros((B,), dtype=jnp.int32),
-            next_action=jnp.zeros((B,), dtype=jnp.int32),
-            trajectory_active=jnp.ones((B,), dtype=jnp.bool_),
+            next_action=jnp.full((B,), -1, dtype=jnp.int32),
+            trajectory_active=trajectories_active(board_state, turn_count),
             board_state=board_state,
             turn_count=turn_count,
             key=key,
@@ -143,6 +143,16 @@ def check_winner(board_state: jnp.ndarray) -> jnp.ndarray:
     one_win = jnp.any(one_output == 4, axis=(1, 2, 3))
     two_win = jnp.any(two_output == 4, axis=(1, 2, 3))
     return jnp.where(one_win, 1, jnp.where(two_win, 2, 0))
+
+
+def trajectories_active(
+    board_state: jnp.ndarray, turn_count: jnp.ndarray
+) -> jnp.ndarray:
+    """
+    Check if any trajectory is still active.
+    """
+    winners = check_winner(board_state)
+    return (winners == 0) & (turn_count < 42)
 
 
 class SelectResult(NamedTuple):
@@ -375,6 +385,17 @@ def simulate_rollouts(
     )
 
 
+def backpropagate(
+    tree: ArenaTree,
+    leaf_index: jnp.ndarray,
+    results: jnp.ndarray,
+) -> ArenaTree:
+    """
+    Backpropagate the results from the leaf node up to the root.
+    """
+    return tree
+
+
 def run_mcts_search(
     board_state: jnp.ndarray, num_simulations: int, key: jnp.ndarray
 ) -> ArenaTree:
@@ -406,6 +427,8 @@ def run_mcts_search(
         key, subkey = jax.random.split(key)
         results = simulate_rollouts(subkey, sim_board, sim_turns)
         print(f"Results by action: {results}")
+
+        # Backpropagate
 
     return tree
 
