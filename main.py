@@ -216,6 +216,12 @@ def select_leaf(
             state.current_node_index,
         )
 
+        prospective_board_state = play_move(
+            state.board_state, best_action, (state.turn_count % 2) + 1
+        )
+        winners = check_winner(prospective_board_state)
+        is_unfinished = winners == 0
+
         # Remain active only if we have not discovered a leaf node
         new_trajectory_active = state.trajectory_active & child_exists
 
@@ -223,9 +229,7 @@ def select_leaf(
         new_board_state = jnp.where(
             # Only update when we keep traversing deeper
             new_trajectory_active[:, None, None],
-            play_move(
-                state.board_state, best_action, (state.turn_count % 2) + 1
-            ),  # Player 1 or 2
+            prospective_board_state,
             state.board_state,
         )
         new_turn_count = jnp.where(
@@ -233,6 +237,8 @@ def select_leaf(
             state.turn_count + 1,
             state.turn_count,
         )
+
+        new_trajectory_active = new_trajectory_active & is_unfinished
 
         return state._replace(
             current_node_index=new_current_node_index,
