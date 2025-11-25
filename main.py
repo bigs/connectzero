@@ -390,15 +390,70 @@ def simulate_rollouts(
     )
 
 
+class BackpropState(NamedTuple):
+    tree: ArenaTree
+    node_index: jnp.ndarray
+    result: jnp.ndarray
+
+
 def backpropagate(
     tree: ArenaTree,
-    leaf_index: jnp.ndarray,
+    initial_leaf_index: jnp.ndarray,
     results: jnp.ndarray,
 ) -> ArenaTree:
     """
     Backpropagate the results from the leaf node up to the root.
     """
-    return tree
+    batch_range = jnp.arange(tree.children_index.shape[0])
+
+    def backprop_body(state: BackpropState) -> BackpropState:
+        parents = state.tree.parents[batch_range, state.node_index]
+        actions = state.tree.action_from_parent[batch_range, state.node_index]
+
+        # Update node stats on the parent's edge
+        updated_children_visits = state.tree.children_visits.at[
+            batch_range,
+            parents,
+            actions,
+        ].add(1)
+        updated_children_values = state.tree.children_values.at[
+            batch_range,
+            parents,
+            actions,
+        ].add(state.result)
+
+        # Mask updates for finished threads (node_index == -1)
+        should_update = (state.node_index != -1) & (parents != -1)
+
+        next_tree = state.tree._replace(
+            children_visits=jnp.where(
+                should_update[:, None, None],
+                updated_children_visits,
+                state.tree.children_visits,
+            ),
+            children_values=jnp.where(
+                should_update[:, None, None],
+                updated_children_values,
+                state.tree.children_values,
+            ),
+        )
+
+        next_node_index = jnp.where(state.node_index != -1, parents, -1)
+        next_result = state.result * -1
+
+        return BackpropState(
+            tree=next_tree,
+            node_index=next_node_index,
+            result=next_result,
+        )
+
+    final_state = jax.lax.while_loop(
+        cond_fun=lambda state: jnp.any(state.node_index != -1),
+        body_fun=backprop_body,
+        init_val=BackpropState(tree, initial_leaf_index, results),
+    )
+
+    return final_state.tree
 
 
 def run_mcts_search(
@@ -434,6 +489,7 @@ def run_mcts_search(
         print(f"Results by action: {results}")
 
         # Backpropagate
+        tree = backpropagate(tree, new_node_idx, results)
 
     return tree
 
@@ -450,6 +506,9 @@ def main():
     tree = run_mcts_search(
         board_state=starting_board_state, num_simulations=10, key=key
     )
+
+    print(tree.children_visits)
+    print(tree.children_values)
 
 
 if __name__ == "__main__":
