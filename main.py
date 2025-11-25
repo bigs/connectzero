@@ -532,10 +532,10 @@ def main():
 
     key = jax.random.PRNGKey(1)
     batch_size = starting_board_state.shape[0]
-    num_simulations = 2000
+    num_simulations = 1000
     board_state = starting_board_state
 
-    for i in range(20):
+    while jnp.any(check_winner(board_state) == 0):
         # We must reset the tree each turn because the root node (index 0)
         # always corresponds to the current board_state passed to run_mcts_search.
         # We also don't have logic to re-root the tree yet.
@@ -547,7 +547,6 @@ def main():
         tree, best_action, board_state = run_mcts_search(
             tree, board_state, num_simulations, subkey
         )
-        print(f"Move {i + 1}")
         print_board_states(board_state)
         print("Best Action:", best_action)
 
