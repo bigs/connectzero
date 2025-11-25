@@ -3,13 +3,6 @@ from typing import NamedTuple
 import jax
 import jax.numpy as jnp
 
-# B = Batch size (e.g., 128 games)
-B = 128
-# N = Max simulations (e.g., 800 nodes)
-N = 800
-# A = Actions (7 columns)
-A = 7
-
 
 class ArenaTree(NamedTuple):
     """
@@ -455,13 +448,11 @@ class MCTSLoopState(NamedTuple):
 
 @jax.jit(static_argnames=["num_simulations"])
 def run_mcts_search(
-    board_state: jnp.ndarray, num_simulations: int, key: jnp.ndarray
+    tree: ArenaTree, board_state: jnp.ndarray, num_simulations: int, key: jnp.ndarray
 ) -> tuple[ArenaTree, jnp.ndarray]:
     """
     Run MCTS search on the given tree and board state.
     """
-    batch_size = board_state.shape[0]
-    tree = ArenaTree.init(B=batch_size, N=num_simulations + 1, A=7)
 
     def mcts_step(i: int, state: MCTSLoopState) -> MCTSLoopState:
         key, tree = state.key, state.tree
@@ -507,9 +498,12 @@ def main():
     starting_board_state = jnp.expand_dims(starting_board_state, axis=0)
 
     key = jax.random.PRNGKey(0)
+    batch_size = starting_board_state.shape[0]
+    num_simulations = 2000
+    tree = ArenaTree.init(B=batch_size, N=num_simulations + 1, A=7)
 
     tree, best_action = run_mcts_search(
-        board_state=starting_board_state, num_simulations=2000, key=key
+        tree, starting_board_state, num_simulations, key
     )
 
     print(best_action)
