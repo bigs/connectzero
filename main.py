@@ -461,6 +461,7 @@ class MCTSLoopState(NamedTuple):
     tree: ArenaTree
 
 
+@jax.jit(static_argnames=["num_simulations"])
 def run_mcts_search(
     board_state: jnp.ndarray, num_simulations: int, key: jnp.ndarray
 ) -> ArenaTree:
@@ -515,7 +516,7 @@ def main():
 
     key = jax.random.PRNGKey(0)
 
-    tree = run_mcts_search(
+    tree: ArenaTree = run_mcts_search(
         board_state=starting_board_state, num_simulations=800, key=key
     )
 
