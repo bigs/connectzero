@@ -67,10 +67,9 @@ class SelectState(NamedTuple):
     trajectory_active: jnp.ndarray  # [B], dtype=bool
     board_state: jnp.ndarray  # [B, 6, 7], dtype=int32
     turn_count: jnp.ndarray  # [B], dtype=int32
-    key: jnp.ndarray  # PRNG key
 
     @classmethod
-    def init(cls, B: int, key: jnp.ndarray, board_state: jnp.ndarray):
+    def init(cls, B: int, board_state: jnp.ndarray):
         turn_count = jnp.count_nonzero(board_state, axis=(1, 2))
         return cls(
             current_node_index=jnp.zeros((B,), dtype=jnp.int32),
@@ -78,7 +77,6 @@ class SelectState(NamedTuple):
             trajectory_active=trajectories_active(board_state, turn_count),
             board_state=board_state,
             turn_count=turn_count,
-            key=key,
         )
 
 
@@ -162,46 +160,41 @@ class SelectResult(NamedTuple):
     turn_count: jnp.ndarray  # [B], dtype=int32
 
 
-def select_leaf(
-    tree: ArenaTree, board_state: jnp.ndarray, key: jnp.ndarray
-) -> SelectResult:
+def select_leaf(tree: ArenaTree, board_state: jnp.ndarray) -> SelectResult:
     """
     Select a leaf node to expand.
     """
+
+    c = jnp.sqrt(2)
 
     def compute_ucb_values(
         tree: ArenaTree,
         current_node_index: jnp.ndarray,
         board_state: jnp.ndarray,
-        key: jnp.ndarray,
     ) -> jnp.ndarray:
         """
         Compute the UCB values for each action.
-        Currently returns random noise (uniform random [0, 1)) for each action.
         """
-        batch_size = tree.children_index.shape[0]
-        action_space_size = tree.children_index.shape[2]
-
-        # Generate random values for each action in the batch
-        random_values = jax.random.uniform(
-            key, shape=(batch_size, action_space_size), minval=0.0, maxval=1.0
+        n_s_a = tree.children_visits[batch_range, current_node_index, :]
+        q_values = jnp.where(
+            n_s_a > 0,
+            tree.children_values[batch_range, current_node_index, :] / n_s_a,
+            0.0,
         )
-
+        n_s = jnp.sum(n_s_a, axis=1)
+        exploration = c * jnp.sqrt(jnp.log(n_s[:, None]) / n_s_a)
+        ucb = q_values + exploration
         # Mask full columns
-        random_values = jnp.where(
-            jnp.any(board_state == 0, axis=1), random_values, -jnp.inf
-        )
+        ucb = jnp.where(jnp.any(board_state == 0, axis=1), ucb, -jnp.inf)
 
-        return random_values
+        return ucb
 
     # Don't compute this in every iteration, dummy
     batch_range = jnp.arange(tree.children_index.shape[0])
 
     def select_leaf_body(state: SelectState) -> SelectState:
-        key, subkey = jax.random.split(state.key)
-
         ucb_values = compute_ucb_values(
-            tree, state.current_node_index, state.board_state, subkey
+            tree, state.current_node_index, state.board_state
         )
         best_action = jnp.argmax(ucb_values, axis=1)
 
@@ -252,14 +245,13 @@ def select_leaf(
             trajectory_active=new_trajectory_active,
             board_state=new_board_state,
             turn_count=new_turn_count,
-            key=key,
         )
 
     final_state = jax.lax.while_loop(
         cond_fun=lambda state: jnp.any(state.trajectory_active),
         body_fun=select_leaf_body,
         init_val=SelectState.init(
-            B=tree.children_index.shape[0], key=key, board_state=board_state
+            B=tree.children_index.shape[0], board_state=board_state
         ),
     )
 
@@ -473,10 +465,8 @@ def run_mcts_search(
 
     def mcts_step(i: int, state: MCTSLoopState) -> MCTSLoopState:
         key, tree = state.key, state.tree
-        key, subkey = jax.random.split(key)
-
         # Select
-        select_result = select_leaf(tree, board_state, subkey)
+        select_result = select_leaf(tree, board_state)
 
         # Expand
         tree, new_node_idx = expand_node(
