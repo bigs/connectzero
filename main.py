@@ -456,6 +456,11 @@ def backpropagate(
     return final_state.tree
 
 
+class MCTSLoopState(NamedTuple):
+    key: jnp.ndarray
+    tree: ArenaTree
+
+
 def run_mcts_search(
     board_state: jnp.ndarray, num_simulations: int, key: jnp.ndarray
 ) -> ArenaTree:
@@ -464,12 +469,13 @@ def run_mcts_search(
     """
     batch_size = board_state.shape[0]
     tree = ArenaTree.init(B=batch_size, N=num_simulations + 1, A=7)
-    for _ in range(num_simulations):
+
+    def mcts_step(i: int, state: MCTSLoopState) -> MCTSLoopState:
+        key, tree = state.key, state.tree
         key, subkey = jax.random.split(key)
+
         # Select
         select_result = select_leaf(tree, board_state, subkey)
-        print(f"Leaf index: {select_result.leaf_index}")
-        print(f"Action to expand: {select_result.action_to_expand}")
 
         # Expand
         tree, new_node_idx = expand_node(
@@ -484,14 +490,20 @@ def run_mcts_search(
             player_who_plays,
         )
         sim_turns = select_result.turn_count + 1
+
         key, subkey = jax.random.split(key)
         results = simulate_rollouts(subkey, sim_board, sim_turns)
-        print(f"Results by action: {results}")
 
         # Backpropagate
         tree = backpropagate(tree, new_node_idx, results)
 
-    return tree
+        return MCTSLoopState(key=key, tree=tree)
+
+    final_state = jax.lax.fori_loop(
+        0, num_simulations, mcts_step, MCTSLoopState(key=key, tree=tree)
+    )
+
+    return final_state.tree
 
 
 def main():
@@ -504,7 +516,7 @@ def main():
     key = jax.random.PRNGKey(0)
 
     tree = run_mcts_search(
-        board_state=starting_board_state, num_simulations=10, key=key
+        board_state=starting_board_state, num_simulations=800, key=key
     )
 
     print(tree.children_visits)
