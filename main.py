@@ -456,7 +456,7 @@ class MCTSLoopState(NamedTuple):
 @jax.jit(static_argnames=["num_simulations"])
 def run_mcts_search(
     board_state: jnp.ndarray, num_simulations: int, key: jnp.ndarray
-) -> ArenaTree:
+) -> tuple[ArenaTree, jnp.ndarray]:
     """
     Run MCTS search on the given tree and board state.
     """
@@ -493,8 +493,10 @@ def run_mcts_search(
     final_state = jax.lax.fori_loop(
         0, num_simulations, mcts_step, MCTSLoopState(key=key, tree=tree)
     )
+    root_visits = final_state.tree.children_visits[:, 0, :]
+    best_action = jnp.argmax(root_visits, axis=-1)
 
-    return final_state.tree
+    return final_state.tree, best_action
 
 
 def main():
@@ -506,12 +508,11 @@ def main():
 
     key = jax.random.PRNGKey(0)
 
-    tree: ArenaTree = run_mcts_search(
-        board_state=starting_board_state, num_simulations=800, key=key
+    tree, best_action = run_mcts_search(
+        board_state=starting_board_state, num_simulations=2000, key=key
     )
 
-    print(tree.children_visits)
-    print(tree.children_values)
+    print(best_action)
 
 
 if __name__ == "__main__":
