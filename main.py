@@ -449,7 +449,7 @@ class MCTSLoopState(NamedTuple):
 @jax.jit(static_argnames=["num_simulations"])
 def run_mcts_search(
     tree: ArenaTree, board_state: jnp.ndarray, num_simulations: int, key: jnp.ndarray
-) -> tuple[ArenaTree, jnp.ndarray]:
+) -> tuple[ArenaTree, jnp.ndarray, jnp.ndarray]:
     """
     Run MCTS search on the given tree and board state.
     """
@@ -481,13 +481,43 @@ def run_mcts_search(
 
         return MCTSLoopState(key=key, tree=tree)
 
-    final_state = jax.lax.fori_loop(
+    final_state: MCTSLoopState = jax.lax.fori_loop(
         0, num_simulations, mcts_step, MCTSLoopState(key=key, tree=tree)
     )
     root_visits = final_state.tree.children_visits[:, 0, :]
     best_action = jnp.argmax(root_visits, axis=-1)
+    turn_count = jnp.sum(jnp.where(board_state == 0, 0, 1), axis=(1, 2))
+    player_who_plays = (turn_count % 2) + 1
+    new_board_state = play_move(board_state, best_action, player_who_plays)
 
-    return final_state.tree, best_action
+    return final_state.tree, best_action, new_board_state
+
+
+def print_board_states(board_states: jnp.ndarray) -> None:
+    """
+    Pretty print a batch of Connect Four board states.
+
+    Args:
+        board_states: [B, 6, 7] array of integers
+                      0 = Empty
+                      1 = Player 1
+                      2 = Player 2
+    """
+    # Symbols mapping: 0 -> '.', 1 -> 'X', 2 -> 'O'
+    symbols = {0: ".", 1: "X", 2: "O"}
+
+    # Move from GPU/TPU to CPU and convert to standard numpy for easier iteration
+    board_states_np = jax.device_get(board_states)
+
+    for b in range(board_states_np.shape[0]):
+        print(f"Board {b}:")
+        print("  0 1 2 3 4 5 6")
+        print("  " + "- " * 7)
+        for row in range(board_states_np.shape[1]):
+            row_str = " ".join(symbols[int(cell)] for cell in board_states_np[b, row])
+            print(f"| {row_str} |")
+        print("  " + "- " * 7)
+        print()
 
 
 def main():
@@ -497,16 +527,29 @@ def main():
     starting_board_state = starting_board_state.at[4, 3].set(2)
     starting_board_state = jnp.expand_dims(starting_board_state, axis=0)
 
-    key = jax.random.PRNGKey(0)
+    print("Initial Board State:")
+    print_board_states(starting_board_state)
+
+    key = jax.random.PRNGKey(1)
     batch_size = starting_board_state.shape[0]
     num_simulations = 2000
-    tree = ArenaTree.init(B=batch_size, N=num_simulations + 1, A=7)
+    board_state = starting_board_state
 
-    tree, best_action = run_mcts_search(
-        tree, starting_board_state, num_simulations, key
-    )
+    for i in range(20):
+        # We must reset the tree each turn because the root node (index 0)
+        # always corresponds to the current board_state passed to run_mcts_search.
+        # We also don't have logic to re-root the tree yet.
+        tree = ArenaTree.init(B=batch_size, N=num_simulations + 1, A=7)
 
-    print(best_action)
+        # Split key to ensure different random seeds for each search
+        key, subkey = jax.random.split(key)
+
+        tree, best_action, board_state = run_mcts_search(
+            tree, board_state, num_simulations, subkey
+        )
+        print(f"Move {i + 1}")
+        print_board_states(board_state)
+        print("Best Action:", best_action)
 
 
 if __name__ == "__main__":
