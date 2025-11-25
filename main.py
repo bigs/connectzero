@@ -168,15 +168,14 @@ def select_leaf(tree: ArenaTree, board_state: jnp.ndarray) -> SelectResult:
         """
         Compute the UCB values for each action.
         """
-        n_s_a = tree.children_visits[batch_range, current_node_index, :]
-        q_values = jnp.where(
-            n_s_a > 0,
-            tree.children_values[batch_range, current_node_index, :] / n_s_a,
-            0.0,
-        )
-        n_s = jnp.sum(n_s_a, axis=1)
-        exploration = c * jnp.sqrt(jnp.log(n_s[:, None]) / n_s_a)
-        ucb = q_values + exploration
+        visits = tree.children_visits[batch_range, current_node_index, :]
+        total_values = tree.children_values[batch_range, current_node_index, :]
+        safe_visits = jnp.maximum(visits, 1)
+        q_values = jnp.where(visits > 0, total_values / safe_visits, 0.0)
+        parent_visits = jnp.sum(visits, axis=1)
+        safe_parent_visits = jnp.maximum(parent_visits, 1)
+        exploration = c * jnp.sqrt(jnp.log(safe_parent_visits[:, None]) / safe_visits)
+        ucb = jnp.where(visits == 0, jnp.inf, q_values + exploration)
         # Mask full columns
         ucb = jnp.where(jnp.any(board_state == 0, axis=1), ucb, -jnp.inf)
 
@@ -523,16 +522,14 @@ def print_board_states(board_states: jnp.ndarray) -> None:
 def main():
     # Initialize a board with two moves in the middle column
     starting_board_state = jnp.zeros((6, 7), dtype=jnp.int32)
-    starting_board_state = starting_board_state.at[5, 3].set(1)
-    starting_board_state = starting_board_state.at[4, 3].set(2)
     starting_board_state = jnp.expand_dims(starting_board_state, axis=0)
 
     print("Initial Board State:")
     print_board_states(starting_board_state)
 
-    key = jax.random.PRNGKey(1)
+    key = jax.random.PRNGKey(0)
     batch_size = starting_board_state.shape[0]
-    num_simulations = 1000
+    num_simulations = 10000
     board_state = starting_board_state
 
     while jnp.any(check_winner(board_state) == 0):
@@ -549,6 +546,9 @@ def main():
         )
         print_board_states(board_state)
         print("Best Action:", best_action)
+
+    print(f"Children Visits: {tree.children_visits[:, 0, :]}")
+    print(f"Children Values: {tree.children_values[:, 0, :]}")
 
 
 if __name__ == "__main__":
