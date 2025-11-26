@@ -71,7 +71,7 @@ class SelectState(NamedTuple):
             trajectory_active=trajectories_active(board_state, turn_count),
             board_state=board_state,
             turn_count=turn_count,
-            winner=check_winner(board_state),
+            winner=check_winner(board_state, turn_count),
         )
 
 
@@ -90,18 +90,20 @@ def play_move(
     return board_state.at[batch_range, target_rows, action].set(player_id)
 
 
-def check_winner(board_state: jnp.ndarray) -> jnp.ndarray:
+def check_winner(board_state: jnp.ndarray, turn_count: jnp.ndarray) -> jnp.ndarray:
     """
     Check for a winner in the batch of boards.
 
     Args:
         board_state: [B, 6, 7] array (0=Empty, 1=P1, 2=P2)
+        turn_count: [B] array of turn counts
 
     Returns:
         [B] array where:
-        0 = No winner yet / Draw (distinguish later if needed)
+        0 = Incomplete game
         1 = Player 1 won
         2 = Player 2 won
+        3 = Draw
     """
 
     # Initialize (4 filters, 1 input channel, 4 height, 4 width)
@@ -135,7 +137,8 @@ def check_winner(board_state: jnp.ndarray) -> jnp.ndarray:
     )
     one_win = jnp.any(one_output == 4, axis=(1, 2, 3))
     two_win = jnp.any(two_output == 4, axis=(1, 2, 3))
-    return jnp.where(one_win, 1, jnp.where(two_win, 2, 0))
+    winner = jnp.where(one_win, 1, jnp.where(two_win, 2, 0))
+    return jnp.where((winner == 0) & (turn_count >= 42), 3, winner)
 
 
 def trajectories_active(
@@ -144,8 +147,8 @@ def trajectories_active(
     """
     Check if any trajectory is still active.
     """
-    winners = check_winner(board_state)
-    return (winners == 0) & (turn_count < 42)
+    winners = check_winner(board_state, turn_count)
+    return winners == 0
 
 
 class SelectResult(NamedTuple):
@@ -213,7 +216,7 @@ def select_leaf(tree: ArenaTree, board_state: jnp.ndarray) -> SelectResult:
         prospective_board_state = play_move(
             state.board_state, best_action, (state.turn_count % 2) + 1
         )
-        prospective_winner = check_winner(prospective_board_state)
+        prospective_winner = check_winner(prospective_board_state, state.turn_count + 1)
         is_unfinished = prospective_winner == 0
 
         # Remain active only if we have not discovered a leaf node
@@ -347,10 +350,8 @@ def simulate_rollouts(
             state.turn_count,
         )
 
-        winner = check_winner(new_board_state)
-        new_trajectory_active = (
-            state.trajectory_active & (winner == 0) & (new_turn_count < 42)
-        )
+        winner = check_winner(new_board_state, new_turn_count)
+        new_trajectory_active = state.trajectory_active & (winner == 0)
 
         return state._replace(
             key=key,
@@ -361,8 +362,8 @@ def simulate_rollouts(
         )
 
     # Initial check
-    winner = check_winner(board_state)
-    trajectory_active = (winner == 0) & (turn_count < 42)
+    winner = check_winner(board_state, turn_count)
+    trajectory_active = winner == 0
 
     final_state = jax.lax.while_loop(
         cond_fun=lambda state: jnp.any(state.trajectory_active),
@@ -378,7 +379,7 @@ def simulate_rollouts(
     return jnp.where(
         final_state.winner == parent_player,
         1,
-        jnp.where(final_state.winner == 0, 0, -1),
+        jnp.where(final_state.winner == 3, 0, -1),
     )
 
 
@@ -564,7 +565,8 @@ def main():
     num_simulations = 10000
     board_state = starting_board_state
 
-    while jnp.any(check_winner(board_state) == 0):
+    turn_count = jnp.count_nonzero(board_state, axis=(1, 2))
+    while jnp.any(check_winner(board_state, turn_count) == 0):
         # We must reset the tree each turn because the root node (index 0)
         # always corresponds to the current board_state passed to run_mcts_search.
         # We also don't have logic to re-root the tree yet.
@@ -576,6 +578,7 @@ def main():
         tree, best_action, board_state = run_mcts_search(
             tree, board_state, num_simulations, subkey
         )
+        turn_count = jnp.count_nonzero(board_state, axis=(1, 2))
         print_board_states(board_state)
         print("Best Action:", best_action)
 
