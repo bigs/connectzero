@@ -60,6 +60,7 @@ class SelectState(NamedTuple):
     trajectory_active: jnp.ndarray  # [B], dtype=bool
     board_state: jnp.ndarray  # [B, 6, 7], dtype=int32
     turn_count: jnp.ndarray  # [B], dtype=int32
+    winner: jnp.ndarray  # [B], dtype=int32
 
     @classmethod
     def init(cls, B: int, board_state: jnp.ndarray):
@@ -70,6 +71,7 @@ class SelectState(NamedTuple):
             trajectory_active=trajectories_active(board_state, turn_count),
             board_state=board_state,
             turn_count=turn_count,
+            winner=check_winner(board_state),
         )
 
 
@@ -151,6 +153,7 @@ class SelectResult(NamedTuple):
     action_to_expand: jnp.ndarray  # [B], dtype=int32
     board_state: jnp.ndarray  # [B, 6, 7], dtype=int32
     turn_count: jnp.ndarray  # [B], dtype=int32
+    winner: jnp.ndarray  # [B], dtype=int32
 
 
 def select_leaf(tree: ArenaTree, board_state: jnp.ndarray) -> SelectResult:
@@ -210,8 +213,8 @@ def select_leaf(tree: ArenaTree, board_state: jnp.ndarray) -> SelectResult:
         prospective_board_state = play_move(
             state.board_state, best_action, (state.turn_count % 2) + 1
         )
-        winners = check_winner(prospective_board_state)
-        is_unfinished = winners == 0
+        prospective_winner = check_winner(prospective_board_state)
+        is_unfinished = prospective_winner == 0
 
         # Remain active only if we have not discovered a leaf node
         new_trajectory_active = state.trajectory_active & child_exists
@@ -229,6 +232,9 @@ def select_leaf(tree: ArenaTree, board_state: jnp.ndarray) -> SelectResult:
             state.turn_count,
         )
 
+        # Reuse prospective_winner if we traversed, otherwise keep previous winner
+        new_winner = jnp.where(new_trajectory_active, prospective_winner, state.winner)
+
         new_trajectory_active = new_trajectory_active & is_unfinished
 
         return state._replace(
@@ -237,6 +243,7 @@ def select_leaf(tree: ArenaTree, board_state: jnp.ndarray) -> SelectResult:
             trajectory_active=new_trajectory_active,
             board_state=new_board_state,
             turn_count=new_turn_count,
+            winner=new_winner,
         )
 
     final_state = jax.lax.while_loop(
@@ -252,6 +259,7 @@ def select_leaf(tree: ArenaTree, board_state: jnp.ndarray) -> SelectResult:
         action_to_expand=final_state.next_action,
         board_state=final_state.board_state,
         turn_count=final_state.turn_count,
+        winner=final_state.winner,
     )
 
 
@@ -458,25 +466,49 @@ def run_mcts_search(
         # Select
         select_result = select_leaf(tree, board_state)
 
+        current_is_terminal = (select_result.winner != 0) | (
+            select_result.turn_count >= 42
+        )
+        should_expand = (select_result.action_to_expand >= 0) & ~current_is_terminal
+
         # Expand
-        tree, new_node_idx = expand_node(
+        expanded_tree, new_node_idx = expand_node(
             tree, select_result.leaf_index, select_result.action_to_expand
+        )
+        # Apply the expansion only if should_expand
+        tree = jax.tree.map(
+            lambda old, new: jnp.where(
+                jnp.expand_dims(~should_expand, axis=tuple(range(1, new.ndim))),
+                old,
+                new,
+            ),
+            tree,
+            expanded_tree,
         )
 
         # Simulate
         player_who_plays = (select_result.turn_count % 2) + 1
-        sim_board = play_move(
+        prospective_board = play_move(
             select_result.board_state,
             select_result.action_to_expand,
             player_who_plays,
         )
-        sim_turns = select_result.turn_count + 1
+
+        sim_board = jnp.where(
+            should_expand[:, None, None], prospective_board, select_result.board_state
+        )
+        sim_turns = jnp.where(
+            should_expand, select_result.turn_count + 1, select_result.turn_count
+        )
 
         key, subkey = jax.random.split(key)
         results = simulate_rollouts(subkey, sim_board, sim_turns)
 
         # Backpropagate
-        tree = backpropagate(tree, new_node_idx, results)
+        target_node_idx = jnp.where(
+            should_expand, new_node_idx, select_result.leaf_index
+        )
+        tree = backpropagate(tree, target_node_idx, results)
 
         return MCTSLoopState(key=key, tree=tree)
 
