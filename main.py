@@ -1,6 +1,7 @@
 import argparse
 import time
 from typing import NamedTuple
+from functools import cache
 
 import jax
 import jax.numpy as jnp
@@ -96,6 +97,22 @@ def play_move(
     return board_state.at[batch_range, target_rows, action].set(player_id)
 
 
+@cache
+def create_filters() -> jnp.ndarray:
+    # Initialize (4 filters, 1 input channel, 4 height, 4 width)
+    filters = jnp.zeros((4, 1, 4, 4), dtype=jnp.int32)
+    # Horizontal Filter
+    filters = filters.at[0, 0, 0, :].set(1)
+    # Vertical Filter
+    filters = filters.at[1, 0, :, 0].set(1)
+    # Diagonal Filter (Top-left to Bottom-right)
+    filters = filters.at[2, 0].set(jnp.eye(4, dtype=jnp.int32))
+    # Anti-Diagonal Filter (Top-right to Bottom-left)
+    filters = filters.at[3, 0].set(jnp.fliplr(jnp.eye(4, dtype=jnp.int32)))
+
+    return filters
+
+
 def check_winner(board_state: jnp.ndarray, turn_count: jnp.ndarray) -> jnp.ndarray:
     """
     Check for a winner in the batch of boards.
@@ -111,17 +128,7 @@ def check_winner(board_state: jnp.ndarray, turn_count: jnp.ndarray) -> jnp.ndarr
         2 = Player 2 won
         3 = Draw
     """
-
-    # Initialize (4 filters, 1 input channel, 4 height, 4 width)
-    filters = jnp.zeros((4, 1, 4, 4), dtype=jnp.int32)
-    # Horizontal Filter
-    filters = filters.at[0, 0, 0, :].set(1)
-    # Vertical Filter
-    filters = filters.at[1, 0, :, 0].set(1)
-    # Diagonal Filter (Top-left to Bottom-right)
-    filters = filters.at[2, 0].set(jnp.eye(4, dtype=jnp.int32))
-    # Anti-Diagonal Filter (Top-right to Bottom-left)
-    filters = filters.at[3, 0].set(jnp.fliplr(jnp.eye(4, dtype=jnp.int32)))
+    filters = create_filters()
 
     player_one = jnp.where(board_state == 1, 1, 0)
     player_two = jnp.where(board_state == 2, 1, 0)
