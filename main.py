@@ -462,6 +462,44 @@ class MCTSLoopState(NamedTuple):
     tree: ArenaTree
 
 
+def advance_tree(tree: ArenaTree, action: jnp.ndarray) -> ArenaTree:
+    """
+    Advance the tree to the next root based on the action.
+    If the action leads to an unexpanded node, reset the tree.
+    """
+    batch_range = jnp.arange(tree.children_index.shape[0])
+    next_root_index = tree.children_index[batch_range, tree.root_index, action]
+
+    # Check if the move is valid (node exists)
+    valid_move = next_root_index != -1
+
+    # Prepare Advanced Tree
+    # Clamp index to 0 to avoid index error, but the result will be ignored if invalid.
+    safe_next_root_index = jnp.maximum(next_root_index, 0)
+
+    next_parents = tree.parents.at[batch_range, safe_next_root_index].set(-1)
+    advanced_tree = tree._replace(
+        root_index=safe_next_root_index,
+        parents=next_parents,
+    )
+
+    # Prepare Reset Tree
+    reset_tree = ArenaTree.init(
+        tree.children_index.shape[0],
+        tree.children_index.shape[1],
+        tree.children_index.shape[2],
+    )
+
+    # Select between advanced and reset based on valid_move
+    def select(adv, rst):
+        # Broadcast valid_move to match data shape
+        shape_diff = adv.ndim - valid_move.ndim
+        mask = valid_move.reshape(valid_move.shape + (1,) * shape_diff)
+        return jnp.where(mask, adv, rst)
+
+    return jax.tree.map(select, advanced_tree, reset_tree)
+
+
 @jax.jit(static_argnames=["num_simulations"])
 def run_mcts_search(
     tree: ArenaTree, board_state: jnp.ndarray, num_simulations: int, key: jnp.ndarray
@@ -530,14 +568,8 @@ def run_mcts_search(
     turn_count = jnp.sum(jnp.where(board_state == 0, 0, 1), axis=(1, 2))
     player_who_plays = (turn_count % 2) + 1
     new_board_state = play_move(board_state, best_action, player_who_plays)
-    next_root_index = final_state.tree.children_index[
-        batch_range, tree.root_index, best_action
-    ]
-    next_parents = final_state.tree.parents.at[batch_range, next_root_index].set(-1)
-    next_tree = final_state.tree._replace(
-        root_index=next_root_index,
-        parents=next_parents,
-    )
+
+    next_tree = advance_tree(final_state.tree, best_action)
 
     return next_tree, best_action, new_board_state
 
@@ -569,6 +601,39 @@ def print_board_states(board_states: jnp.ndarray) -> None:
         print()
 
 
+def handle_player_turn(
+    tree: ArenaTree, board_state: jnp.ndarray, turn_count: jnp.ndarray
+) -> tuple[ArenaTree, jnp.ndarray]:
+    col = -1
+    while col < 0 or col > 6:
+        try:
+            line = input(f"Your move (0-6) [Turn {int(turn_count[0])}]: ")
+            col = int(line)
+            if col < 0 or col > 6:
+                print("Invalid column. Please enter 0-6.")
+                continue
+            # Check if column is full
+            if board_state[0, 0, col] != 0:
+                print("Column is full.")
+                col = -1
+        except ValueError:
+            print("Invalid input.")
+
+    action = jnp.array([col], dtype=jnp.int32)
+
+    # Advance tree first (using current root)
+    tree = advance_tree(tree, action)
+
+    # Play move
+    player_who_plays = (turn_count % 2) + 1
+    board_state = play_move(board_state, action, player_who_plays)
+
+    print_board_states(board_state)
+    print("Player played:", col)
+
+    return tree, board_state
+
+
 def main():
     parser = argparse.ArgumentParser(description="MCTS Connect Four")
     parser.add_argument(
@@ -576,6 +641,11 @@ def main():
         type=int,
         default=int(time.time()),
         help="Random seed for PRNG key (default: current timestamp)",
+    )
+    parser.add_argument(
+        "--interactive",
+        action="store_true",
+        help="Play interactively against the computer (Computer goes first)",
     )
     args = parser.parse_args()
 
@@ -599,12 +669,19 @@ def main():
         # Split key to ensure different random seeds for each search
         key, subkey = jax.random.split(key)
 
-        tree, best_action, board_state = run_mcts_search(
-            tree, board_state, num_simulations, subkey
-        )
-        turn_count = jnp.count_nonzero(board_state, axis=(1, 2))
-        print_board_states(board_state)
-        print("Best Action:", best_action)
+        # Check for player turn (Player 2)
+        is_player_turn = args.interactive and (int(turn_count[0]) % 2 != 0)
+
+        if is_player_turn:
+            tree, board_state = handle_player_turn(tree, board_state, turn_count)
+            turn_count = jnp.count_nonzero(board_state, axis=(1, 2))
+        else:
+            tree, best_action, board_state = run_mcts_search(
+                tree, board_state, num_simulations, subkey
+            )
+            turn_count = jnp.count_nonzero(board_state, axis=(1, 2))
+            print_board_states(board_state)
+            print("Best Action:", best_action)
 
 
 if __name__ == "__main__":
