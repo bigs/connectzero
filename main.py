@@ -36,6 +36,9 @@ class ArenaTree(NamedTuple):
     # Tracks the next free slot in the 'N' dimension for each game.
     next_node_index: jnp.ndarray  # [B], dtype=int32
 
+    # Track the floating root
+    root_index: jnp.ndarray  # [B], dtype=int32
+
     @classmethod
     def init(cls, B: int, N: int, A: int):
         """Initialize an empty tree with root at index 0."""
@@ -47,6 +50,7 @@ class ArenaTree(NamedTuple):
             children_values=jnp.zeros((B, N, A), dtype=jnp.float32),
             # Start at 1, because 0 is reserved for the Root
             next_node_index=jnp.ones((B,), dtype=jnp.int32),
+            root_index=jnp.zeros((B,), dtype=jnp.int32),
         )
 
 
@@ -63,10 +67,10 @@ class SelectState(NamedTuple):
     winner: jnp.ndarray  # [B], dtype=int32
 
     @classmethod
-    def init(cls, B: int, board_state: jnp.ndarray):
+    def init(cls, B: int, board_state: jnp.ndarray, root_index: jnp.ndarray):
         turn_count = jnp.count_nonzero(board_state, axis=(1, 2))
         return cls(
-            current_node_index=jnp.zeros((B,), dtype=jnp.int32),
+            current_node_index=root_index,
             next_action=jnp.full((B,), -1, dtype=jnp.int32),
             trajectory_active=trajectories_active(board_state, turn_count),
             board_state=board_state,
@@ -253,7 +257,9 @@ def select_leaf(tree: ArenaTree, board_state: jnp.ndarray) -> SelectResult:
         cond_fun=lambda state: jnp.any(state.trajectory_active),
         body_fun=select_leaf_body,
         init_val=SelectState.init(
-            B=tree.children_index.shape[0], board_state=board_state
+            B=tree.children_index.shape[0],
+            board_state=board_state,
+            root_index=tree.root_index,
         ),
     )
 
@@ -516,13 +522,22 @@ def run_mcts_search(
     final_state: MCTSLoopState = jax.lax.fori_loop(
         0, num_simulations, mcts_step, MCTSLoopState(key=key, tree=tree)
     )
-    root_visits = final_state.tree.children_visits[:, 0, :]
+    batch_range = jnp.arange(tree.children_index.shape[0])
+    root_visits = final_state.tree.children_visits[batch_range, tree.root_index, :]
     best_action = jnp.argmax(root_visits, axis=-1)
     turn_count = jnp.sum(jnp.where(board_state == 0, 0, 1), axis=(1, 2))
     player_who_plays = (turn_count % 2) + 1
     new_board_state = play_move(board_state, best_action, player_who_plays)
+    next_root_index = final_state.tree.children_index[
+        batch_range, tree.root_index, best_action
+    ]
+    next_parents = final_state.tree.parents.at[batch_range, next_root_index].set(-1)
+    next_tree = final_state.tree._replace(
+        root_index=next_root_index,
+        parents=next_parents,
+    )
 
-    return final_state.tree, best_action, new_board_state
+    return next_tree, best_action, new_board_state
 
 
 def print_board_states(board_states: jnp.ndarray) -> None:
@@ -566,12 +581,10 @@ def main():
     board_state = starting_board_state
 
     turn_count = jnp.count_nonzero(board_state, axis=(1, 2))
-    while jnp.any(check_winner(board_state, turn_count) == 0):
-        # We must reset the tree each turn because the root node (index 0)
-        # always corresponds to the current board_state passed to run_mcts_search.
-        # We also don't have logic to re-root the tree yet.
-        tree = ArenaTree.init(B=batch_size, N=num_simulations + 1, A=7)
+    # Node count is an upper bound based on simulations and turns per game
+    tree = ArenaTree.init(B=batch_size, N=num_simulations * 42 + 1, A=7)
 
+    while jnp.any(check_winner(board_state, turn_count) == 0):
         # Split key to ensure different random seeds for each search
         key, subkey = jax.random.split(key)
 
@@ -581,9 +594,6 @@ def main():
         turn_count = jnp.count_nonzero(board_state, axis=(1, 2))
         print_board_states(board_state)
         print("Best Action:", best_action)
-
-    print(f"Children Visits: {tree.children_visits[:, 0, :]}")
-    print(f"Children Values: {tree.children_values[:, 0, :]}")
 
 
 if __name__ == "__main__":
