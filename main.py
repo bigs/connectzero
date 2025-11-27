@@ -1,3 +1,5 @@
+import argparse
+import time
 from typing import NamedTuple
 
 import jax
@@ -568,6 +570,15 @@ def print_board_states(board_states: jnp.ndarray) -> None:
 
 
 def main():
+    parser = argparse.ArgumentParser(description="MCTS Connect Four")
+    parser.add_argument(
+        "--seed",
+        type=int,
+        default=int(time.time()),
+        help="Random seed for PRNG key (default: current timestamp)",
+    )
+    args = parser.parse_args()
+
     # Initialize a board with two moves in the middle column
     starting_board_state = jnp.zeros((6, 7), dtype=jnp.int32)
     starting_board_state = jnp.expand_dims(starting_board_state, axis=0)
@@ -575,7 +586,7 @@ def main():
     print("Initial Board State:")
     print_board_states(starting_board_state)
 
-    key = jax.random.PRNGKey(0)
+    key = jax.random.PRNGKey(args.seed)
     batch_size = starting_board_state.shape[0]
     num_simulations = 10000
     board_state = starting_board_state
