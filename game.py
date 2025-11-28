@@ -87,7 +87,7 @@ def trajectories_active(
 
 def print_board_states(board_states: jnp.ndarray) -> None:
     """
-    Pretty print a batch of Connect Four board states.
+    Pretty print a batch of Connect Four board states side-by-side.
 
     Args:
         board_states: [B, 6, 7] array of integers
@@ -100,13 +100,31 @@ def print_board_states(board_states: jnp.ndarray) -> None:
 
     # Move from GPU/TPU to CPU and convert to standard numpy for easier iteration
     board_states_np = jax.device_get(board_states)
+    batch_size = board_states_np.shape[0]
+    rows = board_states_np.shape[1]
 
-    for b in range(board_states_np.shape[0]):
-        print(f"Board {b}:")
-        print("  0 1 2 3 4 5 6")
-        print("  " + "- " * 7)
-        for row in range(board_states_np.shape[1]):
-            row_str = " ".join(symbols[int(cell)] for cell in board_states_np[b, row])
-            print(f"| {row_str} |")
-        print("  " + "- " * 7)
-        print()
+    # Print headers
+    header_row = ""
+    separator_row = ""
+    for b in range(batch_size):
+        header_row += f"Board {b:<16}"  # Align left with padding
+        separator_row += "  0 1 2 3 4 5 6    "
+    print(header_row)
+    print(separator_row)
+
+    # Print board rows
+    for row in range(rows):
+        line_str = ""
+        for b in range(batch_size):
+            row_content = " ".join(
+                symbols[int(cell)] for cell in board_states_np[b, row]
+            )
+            line_str += f"| {row_content} |  "
+        print(line_str)
+
+    # Print bottom separator
+    bottom_str = ""
+    for b in range(batch_size):
+        bottom_str += "  " + "- " * 7 + "   "
+    print(bottom_str)
+    print()

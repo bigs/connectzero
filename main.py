@@ -12,6 +12,7 @@ def handle_player_turn(
     tree: ArenaTree, board_state: jnp.ndarray, turn_count: jnp.ndarray
 ) -> tuple[ArenaTree, jnp.ndarray]:
     col = -1
+    batch_size = board_state.shape[0]
     while col < 0 or col > 6:
         try:
             line = input(f"Your move (0-6) [Turn {int(turn_count[0])}]: ")
@@ -19,14 +20,16 @@ def handle_player_turn(
             if col < 0 or col > 6:
                 print("Invalid column. Please enter 0-6.")
                 continue
-            # Check if column is full
-            if board_state[0, 0, col] != 0:
-                print("Column is full.")
+            # Check if column is full on ANY board
+            # board_state is [B, 6, 7], we check if top row (0) has any non-zero
+            if jnp.any(board_state[:, 0, col] != 0):
+                print("Column is full on at least one board.")
                 col = -1
         except ValueError:
             print("Invalid input.")
 
-    action = jnp.array([col], dtype=jnp.int32)
+    # Broadcast action to batch size
+    action = jnp.full((batch_size,), col, dtype=jnp.int32)
 
     # Advance tree first (using current root)
     tree = advance_tree(tree, action)
@@ -54,18 +57,35 @@ def main():
         action="store_true",
         help="Play interactively against the computer (Computer goes first)",
     )
+    parser.add_argument(
+        "-b",
+        "--batch",
+        type=int,
+        default=1,
+        help="Batch size for simulation (default: 1)",
+    )
+    parser.add_argument(
+        "--simulations",
+        type=int,
+        default=10000,
+        help="Number of MCTS simulations per move (default: 10000)",
+    )
     args = parser.parse_args()
 
+    if args.interactive and args.batch > 1:
+        print("Interactive mode only supports batch size 1. Setting batch size to 1.")
+        args.batch = 1
+
     # Initialize a board with two moves in the middle column
-    starting_board_state = jnp.zeros((6, 7), dtype=jnp.int32)
-    starting_board_state = jnp.expand_dims(starting_board_state, axis=0)
+    # Shape: [B, 6, 7]
+    starting_board_state = jnp.zeros((args.batch, 6, 7), dtype=jnp.int32)
 
     print("Initial Board State:")
     print_board_states(starting_board_state)
 
     key = jax.random.PRNGKey(args.seed)
     batch_size = starting_board_state.shape[0]
-    num_simulations = 10000
+    num_simulations = args.simulations
     board_state = starting_board_state
 
     turn_count = jnp.count_nonzero(board_state, axis=(1, 2))
