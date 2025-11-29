@@ -1,3 +1,7 @@
+from game import play_move_single
+from tree import MCTSTree
+from game import check_winner_single
+from game import trajectory_is_active
 import jax
 import jax.numpy as jnp
 from typing import NamedTuple
@@ -139,6 +143,122 @@ def select_leaf(tree: ArenaTree, board_state: jnp.ndarray) -> SelectResult:
     )
 
     return SelectResult(
+        leaf_index=final_state.current_node_index,
+        action_to_expand=final_state.next_action,
+        board_state=final_state.board_state,
+        turn_count=final_state.turn_count,
+        winner=final_state.winner,
+    )
+
+
+class SelectStateMCTS(NamedTuple):
+    """
+    The state for the leaf selection jax loop.
+    """
+
+    current_node_index: jnp.int32  # dtype=int32
+    next_action: jnp.int32  # dtype=int32
+    trajectory_active: jnp.bool_  # dtype=bool
+    board_state: jnp.ndarray  # [6, 7], dtype=int32
+    turn_count: jnp.int32  # dtype=int32
+    winner: jnp.int32  # dtype=int32
+
+    @classmethod
+    def init(cls, board_state: jnp.ndarray, root_index: jnp.ndarray):
+        turn_count = jnp.count_nonzero(board_state)
+        return cls(
+            current_node_index=root_index,
+            next_action=-1,
+            trajectory_active=trajectory_is_active(board_state, turn_count),
+            board_state=board_state,
+            turn_count=turn_count,
+            winner=check_winner_single(board_state, turn_count),
+        )
+
+
+class SelectResultMCTS(NamedTuple):
+    leaf_index: jnp.int32  # dtype=int32
+    action_to_expand: jnp.int32  # dtype=int32
+    board_state: jnp.ndarray  # [6, 7], dtype=int32
+    turn_count: jnp.int32  # dtype=int32
+    winner: jnp.int32  # dtype=int32
+
+
+def select_leaf_mcts(tree: MCTSTree, board_state: jnp.ndarray) -> SelectResultMCTS:
+    """
+    Select a leaf node to expand.
+    """
+
+    c = jnp.sqrt(2)
+
+    def compute_ucb_values(
+        tree: MCTSTree,
+        current_node_index: jnp.int32,
+        board_state: jnp.ndarray,
+    ) -> jnp.ndarray:
+        """
+        Compute the UCB values for each action.
+        """
+        visits = tree.children_visits[current_node_index, :]
+        total_values = tree.children_values[current_node_index, :]
+        safe_visits = jnp.maximum(visits, 1)
+        q_values = jnp.where(visits > 0, total_values / safe_visits, 0.0)
+        parent_visits = jnp.sum(visits)  # scalar now
+        safe_parent_visits = jnp.maximum(parent_visits, 1)
+        exploration = c * jnp.sqrt(jnp.log(safe_parent_visits) / safe_visits)
+        ucb = jnp.where(visits == 0, jnp.inf, q_values + exploration)
+        # Mask full columns
+        ucb = jnp.where(board_state[0, :] == 0, ucb, -jnp.inf)
+
+        return ucb
+
+    def select_leaf_body(state: SelectStateMCTS) -> SelectStateMCTS:
+        ucb_values = compute_ucb_values(
+            tree, state.current_node_index, state.board_state
+        )
+        best_action = jnp.argmax(ucb_values)
+
+        child_index = tree.children_index[state.current_node_index, best_action]
+        child_exists = child_index != -1
+
+        # Advance the current node index only if the child exists
+        new_current_node_index = jnp.where(
+            child_exists,
+            child_index,
+            state.current_node_index,
+        )
+
+        new_board_state = play_move_single(
+            state.board_state, best_action, (state.turn_count % 2) + 1
+        )
+        new_winner = check_winner_single(new_board_state, state.turn_count + 1)
+        is_unfinished = new_winner == 0
+
+        # Remain active only if we have not discovered a leaf node
+        new_trajectory_active = child_exists & is_unfinished
+
+        # Iterate
+        new_turn_count = state.turn_count + 1
+
+        return state._replace(
+            current_node_index=new_current_node_index,
+            next_action=best_action,
+            trajectory_active=new_trajectory_active,
+            board_state=new_board_state,
+            turn_count=new_turn_count,
+            winner=new_winner,
+        )
+
+    final_state = jax.lax.while_loop(
+        cond_fun=lambda state: state.trajectory_active,
+        body_fun=select_leaf_body,
+        init_val=SelectStateMCTS.init(
+            board_state=board_state,
+            root_index=tree.root_index,
+        ),
+    )
+
+    return SelectResultMCTS(
         leaf_index=final_state.current_node_index,
         action_to_expand=final_state.next_action,
         board_state=final_state.board_state,
