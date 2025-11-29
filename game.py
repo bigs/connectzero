@@ -18,6 +18,15 @@ def play_move(
     return board_state.at[batch_range, target_rows, action].set(player_id)
 
 
+def play_move_single(
+    board_state: jnp.ndarray, action: jnp.int32, player_id: jnp.int32
+) -> jnp.ndarray:
+    updated_board_state = play_move(
+        jnp.expand_dims(board_state, axis=0), jnp.expand_dims(action, axis=0), player_id
+    )
+    return jnp.squeeze(updated_board_state, axis=0)
+
+
 @cache
 def create_filters() -> jnp.ndarray:
     # Initialize (4 filters, 1 input channel, 4 height, 4 width)
@@ -75,6 +84,15 @@ def check_winner(board_state: jnp.ndarray, turn_count: jnp.ndarray) -> jnp.ndarr
     return jnp.where((winner == 0) & (turn_count >= 42), 3, winner)
 
 
+def check_winner_single(
+    board_state: jnp.ndarray, turn_count: jnp.ndarray
+) -> jnp.ndarray:
+    winner = check_winner(
+        jnp.expand_dims(board_state, axis=0), jnp.expand_dims(turn_count, axis=0)
+    )
+    return jnp.squeeze(winner, axis=0)
+
+
 def trajectories_active(
     board_state: jnp.ndarray, turn_count: jnp.ndarray
 ) -> jnp.ndarray:
@@ -83,6 +101,10 @@ def trajectories_active(
     """
     winners = check_winner(board_state, turn_count)
     return winners == 0
+
+
+def trajectory_is_active(board_state: jnp.ndarray, turn_count: jnp.int32) -> jnp.bool_:
+    return check_winner_single(board_state, turn_count) == 0
 
 
 def print_board_states(board_states: jnp.ndarray) -> None:
@@ -128,3 +150,7 @@ def print_board_states(board_states: jnp.ndarray) -> None:
         bottom_str += "  " + "- " * 7 + "   "
     print(bottom_str)
     print()
+
+
+def print_board_state(board_state: jnp.ndarray) -> None:
+    print_board_states(jnp.expand_dims(board_state, axis=0))
