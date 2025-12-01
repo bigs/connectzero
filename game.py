@@ -1,6 +1,8 @@
+from functools import cache
+
 import jax
 import jax.numpy as jnp
-from functools import cache
+from jax import Array
 
 
 def play_move(
@@ -19,8 +21,19 @@ def play_move(
 
 
 def play_move_single(
-    board_state: jnp.ndarray, action: jnp.int32, player_id: jnp.int32
+    board_state: jnp.ndarray, action: Array, player_id: Array
 ) -> jnp.ndarray:
+    """
+    Play a single move on the board.
+
+    Args:
+        board_state: [6, 7] array of board state, dtype=int32.
+        action: Array, dtype=int32. Column to play (0-6).
+        player_id: Array, dtype=int32. Player ID (1 or 2).
+
+    Returns:
+        [6, 7] array of updated board state, dtype=int32.
+    """
     updated_board_state = play_move(
         jnp.expand_dims(board_state, axis=0), jnp.expand_dims(action, axis=0), player_id
     )
@@ -103,7 +116,17 @@ def trajectories_active(
     return winners == 0
 
 
-def trajectory_is_active(board_state: jnp.ndarray, turn_count: jnp.int32) -> jnp.bool_:
+def trajectory_is_active(board_state: jnp.ndarray, turn_count: Array) -> Array:
+    """
+    Check if a trajectory is still active (game not finished).
+
+    Args:
+        board_state: [6, 7] array of board state, dtype=int32.
+        turn_count: Array, dtype=int32. Current turn count.
+
+    Returns:
+        Array, dtype=bool. True if the game is still active, False otherwise.
+    """
     return check_winner_single(board_state, turn_count) == 0
 
 

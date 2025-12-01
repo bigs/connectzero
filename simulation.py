@@ -1,6 +1,7 @@
 from game import play_move_single
 from game import check_winner_single
 import jax
+from jax import Array
 import jax.numpy as jnp
 from typing import NamedTuple
 from game import check_winner, play_move
@@ -94,26 +95,26 @@ def simulate_rollouts(
 class SimulateStateMCTS(NamedTuple):
     key: jnp.ndarray
     board_state: jnp.ndarray  # [6, 7], dtype=int32
-    turn_count: jnp.int32  # dtype=int32
-    trajectory_active: jnp.bool_  # dtype=bool
-    winner: jnp.int32  # dtype=int32
+    turn_count: Array  # dtype=int32
+    trajectory_active: Array  # dtype=bool
+    winner: Array  # dtype=int32
 
 
 def simulate_rollouts_mcts(
     key: jnp.ndarray,
     board_state: jnp.ndarray,
-    turn_count: jnp.int32,
-) -> jnp.int32:
+    turn_count: Array,
+) -> Array:
     """
     Simulate random games from the given board states to completion.
 
     Args:
         key: JAX PRNG key for random moves.
-        board_state: [6, 7] array of board states.
-        turn_count: int32
+        board_state: [6, 7] array of board states, dtype=int32.
+        turn_count: Array, dtype=int32. Current turn count.
 
     Returns:
-        int32 of results (+1, -1, 0) from the perspective of the player
+        Array, dtype=int32. Results (+1, -1, 0) from the perspective of the player
         who made the move leading to the leaf node.
     """
 

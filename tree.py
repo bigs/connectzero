@@ -2,6 +2,7 @@ from typing import NamedTuple
 
 import jax
 import jax.numpy as jnp
+from jax import Array
 
 
 class ArenaTree(NamedTuple):
@@ -83,10 +84,10 @@ class MCTSTree(NamedTuple):
 
     ### Allocator State
     # Tracks the next free slot in the 'N' dimension.
-    next_node_index: jnp.int32
+    next_node_index: Array  # dtype=int32
 
     # Track the floating root
-    root_index: jnp.int32
+    root_index: Array  # dtype=int32
 
     @classmethod
     def init(cls, N: int, A: int):
@@ -103,10 +104,22 @@ class MCTSTree(NamedTuple):
 
 
 def expand_mcts_tree_node(
-    tree: MCTSTree, leaf_index: jnp.int32, action_to_expand: jnp.int32
-) -> tuple[MCTSTree, jnp.int32]:
+    tree: MCTSTree,
+    leaf_index: Array,
+    action_to_expand: Array,
+) -> tuple[MCTSTree, Array]:
     """
     Expand the tree at the given leaf index and action.
+
+    Args:
+        tree: The MCTS tree to expand.
+        leaf_index: Array, dtype=int32. Index of the leaf node to expand.
+        action_to_expand: Array, dtype=int32. Action to expand from the leaf.
+
+    Returns:
+        A tuple containing:
+        - The updated tree with the new node expanded.
+        - Array, dtype=int32. The index of the newly created node.
     """
     next_node_index = tree.next_node_index
     next_next_node_index = next_node_index + 1
@@ -128,15 +141,25 @@ def expand_mcts_tree_node(
 
 class MCTSBackpropState(NamedTuple):
     tree: MCTSTree
-    node_index: jnp.int32
-    result: jnp.int32
+    node_index: Array  # dtype=int32
+    result: Array  # dtype=int32
 
 
 def backpropagate_mcts_tree_result(
-    tree: MCTSTree, initial_leaf_index: jnp.int32, result: jnp.int32
+    tree: MCTSTree,
+    initial_leaf_index: Array,
+    result: Array,
 ) -> MCTSTree:
     """
     Backpropagate the results from the leaf node up to the root.
+
+    Args:
+        tree: The MCTS tree to update.
+        initial_leaf_index: Array, dtype=int32. Index of the leaf node to start backpropagation from.
+        result: Array, dtype=int32. Result value to backpropagate (+1, -1, or 0).
+
+    Returns:
+        The updated tree with backpropagated statistics.
     """
 
     def backprop_body(state: MCTSBackpropState) -> MCTSBackpropState:
@@ -176,23 +199,50 @@ def backpropagate_mcts_tree_result(
     return final_state.tree
 
 
-def advance_mcts_tree(tree: MCTSTree, action: jnp.int32) -> MCTSTree:
+def advance_mcts_tree(tree: MCTSTree, action: Array) -> MCTSTree:
     """
     Advance the tree to the next root based on the action.
     If the action leads to an unexpanded node, reset the tree.
+
+    Args:
+        tree: The MCTS tree to advance.
+        action: Array, dtype=int32. The action to advance to.
+
+    Returns:
+        The updated tree with the new root, or a reset tree if the action was invalid.
     """
     next_root_index = tree.children_index[tree.root_index, action]
 
     # Check if the move is valid (node exists)
     valid_move = next_root_index != -1
 
-    def _reset_mcts_tree(tree: MCTSTree, _: jnp.int32) -> MCTSTree:
+    def _reset_mcts_tree(tree: MCTSTree, _: Array) -> MCTSTree:
+        """
+        Reset the tree to initial state.
+
+        Args:
+            tree: The MCTS tree to reset.
+            _: Array, dtype=int32. Unused parameter (for compatibility with jax.lax.cond).
+
+        Returns:
+            A new initialized tree.
+        """
         return MCTSTree.init(
             tree.children_index.shape[0],
             tree.children_index.shape[1],
         )
 
-    def _reroot_mcts_tree(tree: MCTSTree, node_index: jnp.int32) -> MCTSTree:
+    def _reroot_mcts_tree(tree: MCTSTree, node_index: Array) -> MCTSTree:
+        """
+        Reroot the tree to the given node index.
+
+        Args:
+            tree: The MCTS tree to reroot.
+            node_index: Array, dtype=int32. Index of the new root node.
+
+        Returns:
+            The updated tree with the new root.
+        """
         next_parents = tree.parents.at[node_index].set(-1)
         return tree._replace(
             root_index=node_index,

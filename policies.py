@@ -1,12 +1,18 @@
-from game import play_move_single
-from tree import MCTSTree
-from game import check_winner_single
-from game import trajectory_is_active
+from typing import NamedTuple
+
 import jax
 import jax.numpy as jnp
-from typing import NamedTuple
-from tree import ArenaTree
-from game import check_winner, trajectories_active, play_move
+from jax import Array
+
+from game import (
+    check_winner,
+    check_winner_single,
+    play_move,
+    play_move_single,
+    trajectories_active,
+    trajectory_is_active,
+)
+from tree import ArenaTree, MCTSTree
 
 
 class SelectState(NamedTuple):
@@ -156,12 +162,12 @@ class SelectStateMCTS(NamedTuple):
     The state for the leaf selection jax loop.
     """
 
-    current_node_index: jnp.int32  # dtype=int32
-    next_action: jnp.int32  # dtype=int32
-    trajectory_active: jnp.bool_  # dtype=bool
+    current_node_index: Array  # dtype=int32
+    next_action: Array  # dtype=int32
+    trajectory_active: Array  # dtype=bool
     board_state: jnp.ndarray  # [6, 7], dtype=int32
-    turn_count: jnp.int32  # dtype=int32
-    winner: jnp.int32  # dtype=int32
+    turn_count: Array  # dtype=int32
+    winner: Array  # dtype=int32
 
     @classmethod
     def init(cls, board_state: jnp.ndarray, root_index: jnp.ndarray):
@@ -177,11 +183,11 @@ class SelectStateMCTS(NamedTuple):
 
 
 class SelectResultMCTS(NamedTuple):
-    leaf_index: jnp.int32  # dtype=int32
-    action_to_expand: jnp.int32  # dtype=int32
+    leaf_index: Array  # dtype=int32
+    action_to_expand: Array  # dtype=int32
     board_state: jnp.ndarray  # [6, 7], dtype=int32
-    turn_count: jnp.int32  # dtype=int32
-    winner: jnp.int32  # dtype=int32
+    turn_count: Array  # dtype=int32
+    winner: Array  # dtype=int32
 
 
 def select_leaf_mcts(tree: MCTSTree, board_state: jnp.ndarray) -> SelectResultMCTS:
@@ -193,11 +199,19 @@ def select_leaf_mcts(tree: MCTSTree, board_state: jnp.ndarray) -> SelectResultMC
 
     def compute_ucb_values(
         tree: MCTSTree,
-        current_node_index: jnp.int32,
+        current_node_index: Array,
         board_state: jnp.ndarray,
     ) -> jnp.ndarray:
         """
         Compute the UCB values for each action.
+
+        Args:
+            tree: The MCTS tree.
+            current_node_index: Array, dtype=int32. Index of the current node.
+            board_state: [6, 7] array of board state, dtype=int32.
+
+        Returns:
+            Array of UCB values for each action.
         """
         visits = tree.children_visits[current_node_index, :]
         total_values = tree.children_values[current_node_index, :]
