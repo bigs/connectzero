@@ -3,7 +3,12 @@ from typing import NamedTuple
 import jax
 import jax.numpy as jnp
 
-from connectzero.game import check_winner, play_move, trajectories_active
+from connectzero.game import (
+    TrainingSample,
+    check_winner,
+    play_move,
+    trajectories_active,
+)
 
 
 class BatchedSearchTree(NamedTuple):
@@ -490,3 +495,31 @@ def run_mcts_search(
     next_tree = advance_search(final_state.tree, best_action)
 
     return next_tree, best_action, new_board_state
+
+
+def extract_training_data(
+    tree: BatchedSearchTree,
+    board_state: jnp.ndarray,
+    turn_count: jnp.ndarray,
+) -> TrainingSample:
+    """
+    Extract training data from the given tree and board state.
+
+    Args:
+        tree: The BatchedSearchTree.
+        board_state: [B, 6, 7] array, dtype=int32.
+        turn_count: Array, dtype=int32. Current turn count.
+
+    Returns:
+        TrainingSample: The training data.
+    """
+    batch_range = jnp.arange(tree.children_index.shape[0])
+    root_visits = tree.children_visits[batch_range, tree.root_index, :]
+    total_visits = jnp.sum(root_visits, axis=1)
+    safe_total_visits = jnp.maximum(total_visits, 1)
+    policy_target = root_visits / safe_total_visits[:, None]
+    value_target = (
+        jnp.sum(tree.children_values[batch_range, tree.root_index, :], axis=1)
+        / safe_total_visits
+    )
+    return TrainingSample(board_state, policy_target, value_target, turn_count)

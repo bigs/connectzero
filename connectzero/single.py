@@ -5,6 +5,7 @@ import jax.numpy as jnp
 from jax import Array
 
 from connectzero.game import (
+    TrainingSample,
     check_winner_single,
     play_move_single,
     trajectory_is_active,
@@ -515,3 +516,25 @@ def run_mcts_search(
     next_tree = advance_search(final_state.tree, best_action)
 
     return next_tree, best_action, new_board_state
+
+
+def extract_training_data(
+    tree: SearchTree, board_state: jnp.ndarray, turn_count: jnp.ndarray
+) -> TrainingSample:
+    """
+    Extract training data from the given tree and board state.
+
+    Args:
+        tree: The SearchTree.
+        board_state: [6, 7] array, dtype=int32.
+        turn_count: Array, dtype=int32. Current turn count.
+
+    Returns:
+        TrainingSample: The training sample.
+    """
+    root_visits = tree.children_visits[tree.root_index, :]
+    total_visits = jnp.sum(root_visits)
+    safe_total_visits = jnp.maximum(total_visits, 1)
+    policy_target = root_visits / safe_total_visits
+    value_target = jnp.sum(tree.children_values[tree.root_index, :]) / safe_total_visits
+    return TrainingSample(board_state, policy_target, value_target, turn_count)
