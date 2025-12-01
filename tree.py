@@ -176,9 +176,15 @@ def backpropagate_mcts_tree_result(
             action,
         ].add(state.result)
 
+        should_update = parent != -1
+
         next_tree = state.tree._replace(
-            children_visits=updated_children_visits,
-            children_values=updated_children_values,
+            children_visits=jnp.where(
+                should_update, updated_children_visits, state.tree.children_visits
+            ),
+            children_values=jnp.where(
+                should_update, updated_children_values, state.tree.children_values
+            ),
         )
 
         next_node_index = parent

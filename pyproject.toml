@@ -25,6 +25,7 @@ project-includes = [
 dev = [
     "pylance>=0.39.0",
     "pyrefly>=0.42.3",
+    "pytest>=9.0.1",
     "ruff>=0.14.6",
 ]
 
