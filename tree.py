@@ -1,6 +1,7 @@
+from typing import NamedTuple
+
 import jax
 import jax.numpy as jnp
-from typing import NamedTuple
 
 
 class ArenaTree(NamedTuple):
@@ -199,7 +200,7 @@ def advance_mcts_tree(tree: MCTSTree, action: jnp.int32) -> MCTSTree:
         )
 
     return jax.lax.cond(
-        valid_move, _reroot_mcts_tree, _reset_mcts_tree, (tree, next_root_index)
+        valid_move, _reroot_mcts_tree, _reset_mcts_tree, tree, next_root_index
     )
 
 
