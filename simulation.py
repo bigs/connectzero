@@ -1,10 +1,10 @@
-from game import play_move_single
-from game import check_winner_single
-import jax
-from jax import Array
-import jax.numpy as jnp
 from typing import NamedTuple
-from game import check_winner, play_move
+
+import jax
+import jax.numpy as jnp
+from jax import Array
+
+from game import check_winner, check_winner_single, play_move, play_move_single
 
 
 class SimulateState(NamedTuple):
