@@ -1,4 +1,4 @@
-# AlphaConnectFour
+# ConnectZero
 
 The goal of this project is to recreate the results of AlphaZero and MuZero for the game of Connect Four, building up the code step by step.
 
