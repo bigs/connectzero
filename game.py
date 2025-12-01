@@ -1,5 +1,3 @@
-from functools import cache
-
 import jax
 import jax.numpy as jnp
 from jax import Array
@@ -40,22 +38,6 @@ def play_move_single(
     return jnp.squeeze(updated_board_state, axis=0)
 
 
-@cache
-def create_filters() -> jnp.ndarray:
-    # Initialize (4 filters, 1 input channel, 4 height, 4 width)
-    filters = jnp.zeros((4, 1, 4, 4), dtype=jnp.int32)
-    # Horizontal Filter
-    filters = filters.at[0, 0, 0, :].set(1)
-    # Vertical Filter
-    filters = filters.at[1, 0, :, 0].set(1)
-    # Diagonal Filter (Top-left to Bottom-right)
-    filters = filters.at[2, 0].set(jnp.eye(4, dtype=jnp.int32))
-    # Anti-Diagonal Filter (Top-right to Bottom-left)
-    filters = filters.at[3, 0].set(jnp.fliplr(jnp.eye(4, dtype=jnp.int32)))
-
-    return filters
-
-
 def check_winner(board_state: jnp.ndarray, turn_count: jnp.ndarray) -> jnp.ndarray:
     """
     Check for a winner in the batch of boards.
@@ -71,7 +53,15 @@ def check_winner(board_state: jnp.ndarray, turn_count: jnp.ndarray) -> jnp.ndarr
         2 = Player 2 won
         3 = Draw
     """
-    filters = create_filters()
+    filters = jnp.array(
+        [
+            [[[1, 1, 1, 1], [0, 0, 0, 0], [0, 0, 0, 0], [0, 0, 0, 0]]],  # Horizontal
+            [[[1, 0, 0, 0], [1, 0, 0, 0], [1, 0, 0, 0], [1, 0, 0, 0]]],  # Vertical
+            [[[1, 0, 0, 0], [0, 1, 0, 0], [0, 0, 1, 0], [0, 0, 0, 1]]],  # Diag
+            [[[0, 0, 0, 1], [0, 0, 1, 0], [0, 1, 0, 0], [1, 0, 0, 0]]],  # Anti-Diag
+        ],
+        dtype=jnp.int32,
+    )
 
     player_one = jnp.where(board_state == 1, 1, 0)
     player_two = jnp.where(board_state == 2, 1, 0)
