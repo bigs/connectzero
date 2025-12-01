@@ -2,8 +2,9 @@ import jax
 import jax.numpy as jnp
 import pytest
 
-from mcts import run_mcts_search, run_mcts_search_single
-from tree import ArenaTree, MCTSTree
+from connectzero import batched, single
+from connectzero.batched import BatchedSearchTree
+from connectzero.single import SearchTree
 
 
 @pytest.fixture
@@ -11,8 +12,8 @@ def params():
     return {"B": 1, "N": 100, "A": 7}
 
 
-def assert_trees_equal(arena: ArenaTree, mcts: MCTSTree, batch_idx: int = 0):
-    """Helper to compare an ArenaTree (at a specific batch index) with an MCTSTree."""
+def assert_trees_equal(arena: BatchedSearchTree, mcts: SearchTree, batch_idx: int = 0):
+    """Helper to compare an BatchedSearchTree (at a specific batch index) with an SearchTree."""
 
     # Compare structure
     assert jnp.array_equal(arena.children_index[batch_idx], mcts.children_index), (
@@ -44,19 +45,19 @@ def test_mcts_search_equivalence(params):
 
     key = jax.random.PRNGKey(42)
 
-    arena = ArenaTree.init(B, N, A)
-    mcts = MCTSTree.init(N, A)
+    arena = BatchedSearchTree.init(B, N, A)
+    mcts = SearchTree.init(N, A)
 
     # Empty board
     board_state = jnp.zeros((6, 7), dtype=jnp.int32)
     batched_board = jnp.expand_dims(board_state, 0)
 
     # Run MCTS Search
-    next_arena, best_action_arena, new_board_arena = run_mcts_search(
+    next_arena, best_action_arena, new_board_arena = batched.run_mcts_search(
         arena, batched_board, num_simulations, key
     )
 
-    next_mcts, best_action_mcts, new_board_mcts = run_mcts_search_single(
+    next_mcts, best_action_mcts, new_board_mcts = single.run_mcts_search(
         mcts, board_state, num_simulations, key
     )
 
@@ -82,8 +83,8 @@ def test_mcts_search_equivalence_midgame(params):
 
     key = jax.random.PRNGKey(123)
 
-    arena = ArenaTree.init(B, N, A)
-    mcts = MCTSTree.init(N, A)
+    arena = BatchedSearchTree.init(B, N, A)
+    mcts = SearchTree.init(N, A)
 
     # Midgame board
     board_state = jnp.zeros((6, 7), dtype=jnp.int32)
@@ -93,11 +94,11 @@ def test_mcts_search_equivalence_midgame(params):
 
     batched_board = jnp.expand_dims(board_state, 0)
 
-    next_arena, best_action_arena, new_board_arena = run_mcts_search(
+    next_arena, best_action_arena, new_board_arena = batched.run_mcts_search(
         arena, batched_board, num_simulations, key
     )
 
-    next_mcts, best_action_mcts, new_board_mcts = run_mcts_search_single(
+    next_mcts, best_action_mcts, new_board_mcts = single.run_mcts_search(
         mcts, board_state, num_simulations, key
     )
 

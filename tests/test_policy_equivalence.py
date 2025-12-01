@@ -1,15 +1,9 @@
 import jax.numpy as jnp
 import pytest
 
-from policies import select_leaf, select_leaf_mcts
-from tree import (
-    ArenaTree,
-    MCTSTree,
-    backpropagate,
-    backpropagate_mcts_tree_result,
-    expand_mcts_tree_node,
-    expand_node,
-)
+from connectzero import batched, single
+from connectzero.batched import BatchedSearchTree
+from connectzero.single import SearchTree
 
 
 @pytest.fixture
@@ -44,8 +38,8 @@ def assert_selection_equal(res_arena, res_mcts, batch_idx=0):
 def test_select_leaf_initial(params):
     B, N, A = params["B"], params["N"], params["A"]
 
-    arena = ArenaTree.init(B, N, A)
-    mcts = MCTSTree.init(N, A)
+    arena = BatchedSearchTree.init(B, N, A)
+    mcts = SearchTree.init(N, A)
 
     # Empty board
     board_state = jnp.zeros((6, 7), dtype=jnp.int32)
@@ -53,8 +47,8 @@ def test_select_leaf_initial(params):
 
     # Select on empty tree
     # Should pick first action because all UCBs are inf (visits=0)
-    res_arena = select_leaf(arena, batched_board)
-    res_mcts = select_leaf_mcts(mcts, board_state)
+    res_arena = batched.select_leaf(arena, batched_board)
+    res_mcts = single.select_leaf(mcts, board_state)
 
     assert_selection_equal(res_arena, res_mcts)
 
@@ -66,8 +60,8 @@ def test_select_leaf_initial(params):
 def test_select_leaf_after_expansion_and_backprop(params):
     B, N, A = params["B"], params["N"], params["A"]
 
-    arena = ArenaTree.init(B, N, A)
-    mcts = MCTSTree.init(N, A)
+    arena = BatchedSearchTree.init(B, N, A)
+    mcts = SearchTree.init(N, A)
 
     board_state = jnp.zeros((6, 7), dtype=jnp.int32)
     batched_board = jnp.expand_dims(board_state, 0)
@@ -76,12 +70,12 @@ def test_select_leaf_after_expansion_and_backprop(params):
     leaf_idx = 0
     action = 0
 
-    arena, arena_node_idx = expand_node(
+    arena, arena_node_idx = batched.expand_leaf(
         arena,
         jnp.array([leaf_idx], dtype=jnp.int32),
         jnp.array([action], dtype=jnp.int32),
     )
-    mcts, mcts_node_idx = expand_mcts_tree_node(
+    mcts, mcts_node_idx = single.expand_leaf(
         mcts, jnp.array(leaf_idx, dtype=jnp.int32), jnp.array(action, dtype=jnp.int32)
     )
 
@@ -89,15 +83,15 @@ def test_select_leaf_after_expansion_and_backprop(params):
     # This makes visits[0, 0] > 0, so UCB for 0 is finite.
     # Others are still inf.
     result = 1
-    arena = backpropagate(arena, arena_node_idx, jnp.array([result], dtype=jnp.int32))
-    mcts = backpropagate_mcts_tree_result(
-        mcts, mcts_node_idx, jnp.array(result, dtype=jnp.int32)
+    arena = batched.backpropagate(
+        arena, arena_node_idx, jnp.array([result], dtype=jnp.int32)
     )
+    mcts = single.backpropagate(mcts, mcts_node_idx, jnp.array(result, dtype=jnp.int32))
 
     # 3. Select again
     # Should avoid Action 0 (finite UCB) and pick Action 1 (infinite UCB)
-    res_arena = select_leaf(arena, batched_board)
-    res_mcts = select_leaf_mcts(mcts, board_state)
+    res_arena = batched.select_leaf(arena, batched_board)
+    res_mcts = single.select_leaf(mcts, board_state)
 
     assert_selection_equal(res_arena, res_mcts)
     assert res_mcts.leaf_index == 0
@@ -105,12 +99,12 @@ def test_select_leaf_after_expansion_and_backprop(params):
 
     # 4. Expand Root -> Action 1
     action_1 = 1
-    arena, arena_node_idx_2 = expand_node(
+    arena, arena_node_idx_2 = batched.expand_leaf(
         arena,
         jnp.array([leaf_idx], dtype=jnp.int32),
         jnp.array([action_1], dtype=jnp.int32),
     )
-    mcts, mcts_node_idx_2 = expand_mcts_tree_node(
+    mcts, mcts_node_idx_2 = single.expand_leaf(
         mcts, jnp.array(leaf_idx, dtype=jnp.int32), jnp.array(action_1, dtype=jnp.int32)
     )
 
@@ -119,17 +113,17 @@ def test_select_leaf_after_expansion_and_backprop(params):
     # Or value of the node.
     # If we pass -1, parent edge value becomes -1.
 
-    arena = backpropagate(arena, arena_node_idx_2, jnp.array([-1], dtype=jnp.int32))
-    mcts = backpropagate_mcts_tree_result(
-        mcts, mcts_node_idx_2, jnp.array(-1, dtype=jnp.int32)
+    arena = batched.backpropagate(
+        arena, arena_node_idx_2, jnp.array([-1], dtype=jnp.int32)
     )
+    mcts = single.backpropagate(mcts, mcts_node_idx_2, jnp.array(-1, dtype=jnp.int32))
 
     # Now Action 0 has val +1, visits 1.
     # Action 1 has val -1, visits 1.
     # Other actions have visits 0 (inf).
     # Selection should pick Action 2 (next inf).
-    res_arena = select_leaf(arena, batched_board)
-    res_mcts = select_leaf_mcts(mcts, board_state)
+    res_arena = batched.select_leaf(arena, batched_board)
+    res_mcts = single.select_leaf(mcts, board_state)
     assert_selection_equal(res_arena, res_mcts)
     assert res_mcts.action_to_expand == 2
 
@@ -138,8 +132,8 @@ def test_select_leaf_traversal(params):
     """Test that selection traverses down already expanded nodes."""
     B, N, A = params["B"], params["N"], params["A"]
 
-    arena = ArenaTree.init(B, N, A)
-    mcts = MCTSTree.init(N, A)
+    arena = BatchedSearchTree.init(B, N, A)
+    mcts = SearchTree.init(N, A)
 
     board_state = jnp.zeros((6, 7), dtype=jnp.int32)
     batched_board = jnp.expand_dims(board_state, 0)
@@ -156,12 +150,12 @@ def test_select_leaf_traversal(params):
 
     for a in range(A):
         # Expand
-        arena, a_idx = expand_node(
+        arena, a_idx = batched.expand_leaf(
             arena,
             jnp.array([root_idx], dtype=jnp.int32),
             jnp.array([a], dtype=jnp.int32),
         )
-        mcts, m_idx = expand_mcts_tree_node(
+        mcts, m_idx = single.expand_leaf(
             mcts, jnp.array(root_idx, dtype=jnp.int32), jnp.array(a, dtype=jnp.int32)
         )
 
@@ -172,17 +166,15 @@ def test_select_leaf_traversal(params):
         # Give Action 0 a very high value so it gets selected
         val = 100 if a == 0 else 0
 
-        arena = backpropagate(arena, a_idx, jnp.array([val], dtype=jnp.int32))
-        mcts = backpropagate_mcts_tree_result(
-            mcts, m_idx, jnp.array(val, dtype=jnp.int32)
-        )
+        arena = batched.backpropagate(arena, a_idx, jnp.array([val], dtype=jnp.int32))
+        mcts = single.backpropagate(mcts, m_idx, jnp.array(val, dtype=jnp.int32))
 
     # 2. Verify that selection now picks Action 0 and traverses to Child 0
     # Child 0 is at index mcts_child_indices[0]
     # At Child 0, visits are 0, so it should pick Action 0 (first inf) from Child 0.
 
-    res_arena = select_leaf(arena, batched_board)
-    res_mcts = select_leaf_mcts(mcts, board_state)
+    res_arena = batched.select_leaf(arena, batched_board)
+    res_mcts = single.select_leaf(mcts, board_state)
 
     assert_selection_equal(res_arena, res_mcts)
 

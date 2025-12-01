@@ -2,7 +2,7 @@ import jax
 import jax.numpy as jnp
 import pytest
 
-from simulation import simulate_rollouts, simulate_rollouts_mcts
+from connectzero import batched, single
 
 
 @pytest.fixture
@@ -24,14 +24,14 @@ def test_simulate_equivalence(params):
 
     # Run simulation
     # Note: We need to use the same key for both to get deterministic results
-    # However, simulate_rollouts splits keys inside.
+    # However, simulate_rollout splits keys inside.
     # Let's see if they use the same random logic.
-    # simulate_rollouts: key, subkey = jax.random.split(state.key)
+    # simulate_rollout: key, subkey = jax.random.split(state.key)
     # simulate_rollouts_mcts: key, subkey = jax.random.split(state.key)
     # Logic seems identical.
 
-    res_arena = simulate_rollouts(key, batched_board, batched_turn_count)
-    res_mcts = simulate_rollouts_mcts(key, board_state, turn_count)
+    res_arena = batched.simulate_rollout(key, batched_board, batched_turn_count)
+    res_mcts = single.simulate_rollout(key, board_state, turn_count)
 
     assert res_arena[0] == res_mcts, "Simulation result mismatch"
 
@@ -63,8 +63,8 @@ def test_simulate_equivalence_midgame(params):
     batched_board = jnp.expand_dims(board_state, 0)
     batched_turn_count = jnp.expand_dims(turn_count, 0)
 
-    res_arena = simulate_rollouts(key, batched_board, batched_turn_count)
-    res_mcts = simulate_rollouts_mcts(key, board_state, turn_count)
+    res_arena = batched.simulate_rollout(key, batched_board, batched_turn_count)
+    res_mcts = single.simulate_rollout(key, board_state, turn_count)
 
     assert res_arena[0] == res_mcts, "Simulation result mismatch (midgame)"
 
@@ -95,8 +95,8 @@ def test_simulate_equivalence_winning_state(params):
     batched_board = jnp.expand_dims(board_state, 0)
     batched_turn_count = jnp.expand_dims(turn_count, 0)
 
-    res_arena = simulate_rollouts(key, batched_board, batched_turn_count)
-    res_mcts = simulate_rollouts_mcts(key, board_state, turn_count)
+    res_arena = batched.simulate_rollout(key, batched_board, batched_turn_count)
+    res_mcts = single.simulate_rollout(key, board_state, turn_count)
 
     # Should be 1 (Player 1 won)
     # But from perspective of player who made the move.

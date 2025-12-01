@@ -1,16 +1,9 @@
 import jax.numpy as jnp
 import pytest
 
-from tree import (
-    ArenaTree,
-    MCTSTree,
-    advance_mcts_tree,
-    advance_tree,
-    backpropagate,
-    backpropagate_mcts_tree_result,
-    expand_mcts_tree_node,
-    expand_node,
-)
+from connectzero import batched, single
+from connectzero.batched import BatchedSearchTree
+from connectzero.single import SearchTree
 
 
 @pytest.fixture
@@ -18,8 +11,8 @@ def tree_params():
     return {"B": 1, "N": 10, "A": 7}
 
 
-def assert_trees_equal(arena: ArenaTree, mcts: MCTSTree, batch_idx: int = 0):
-    """Helper to compare an ArenaTree (at a specific batch index) with an MCTSTree."""
+def assert_trees_equal(arena: BatchedSearchTree, mcts: SearchTree, batch_idx: int = 0):
+    """Helper to compare an BatchedSearchTree (at a specific batch index) with an SearchTree."""
 
     # Compare structure
     assert jnp.array_equal(arena.children_index[batch_idx], mcts.children_index), (
@@ -39,7 +32,7 @@ def assert_trees_equal(arena: ArenaTree, mcts: MCTSTree, batch_idx: int = 0):
     )
 
     # Compare allocator state
-    # Note: ArenaTree.next_node_index is [B], MCTSTree.next_node_index is scalar (array)
+    # Note: BatchedSearchTree.next_node_index is [B], SearchTree.next_node_index is scalar (array)
     assert arena.next_node_index[batch_idx] == mcts.next_node_index, (
         "next_node_index mismatch"
     )
@@ -49,8 +42,8 @@ def assert_trees_equal(arena: ArenaTree, mcts: MCTSTree, batch_idx: int = 0):
 def test_init_equivalence(tree_params):
     B, N, A = tree_params["B"], tree_params["N"], tree_params["A"]
 
-    arena = ArenaTree.init(B, N, A)
-    mcts = MCTSTree.init(N, A)
+    arena = BatchedSearchTree.init(B, N, A)
+    mcts = SearchTree.init(N, A)
 
     assert_trees_equal(arena, mcts)
 
@@ -58,22 +51,22 @@ def test_init_equivalence(tree_params):
 def test_expand_equivalence(tree_params):
     B, N, A = tree_params["B"], tree_params["N"], tree_params["A"]
 
-    arena = ArenaTree.init(B, N, A)
-    mcts = MCTSTree.init(N, A)
+    arena = BatchedSearchTree.init(B, N, A)
+    mcts = SearchTree.init(N, A)
 
     leaf_index = 0  # Root
     action = 3
 
     # Expand Arena
     # Arena expects batched inputs
-    arena, arena_node_idx = expand_node(
+    arena, arena_node_idx = batched.expand_leaf(
         arena,
         jnp.array([leaf_index], dtype=jnp.int32),
         jnp.array([action], dtype=jnp.int32),
     )
 
     # Expand MCTS
-    mcts, mcts_node_idx = expand_mcts_tree_node(
+    mcts, mcts_node_idx = single.expand_leaf(
         mcts, jnp.array(leaf_index, dtype=jnp.int32), jnp.array(action, dtype=jnp.int32)
     )
 
@@ -84,13 +77,13 @@ def test_expand_equivalence(tree_params):
     new_leaf_index = mcts_node_idx
     action_2 = 4
 
-    arena, arena_node_idx_2 = expand_node(
+    arena, arena_node_idx_2 = batched.expand_leaf(
         arena,
         jnp.array([new_leaf_index], dtype=jnp.int32),
         jnp.array([action_2], dtype=jnp.int32),
     )
 
-    mcts, mcts_node_idx_2 = expand_mcts_tree_node(
+    mcts, mcts_node_idx_2 = single.expand_leaf(
         mcts, new_leaf_index, jnp.array(action_2, dtype=jnp.int32)
     )
 
@@ -101,26 +94,26 @@ def test_expand_equivalence(tree_params):
 def test_backprop_equivalence(tree_params):
     B, N, A = tree_params["B"], tree_params["N"], tree_params["A"]
 
-    arena = ArenaTree.init(B, N, A)
-    mcts = MCTSTree.init(N, A)
+    arena = BatchedSearchTree.init(B, N, A)
+    mcts = SearchTree.init(N, A)
 
     # Expand a node to backprop from
     leaf_index = 0
     action = 2
 
-    arena, arena_child_idx = expand_node(
+    arena, arena_child_idx = batched.expand_leaf(
         arena,
         jnp.array([leaf_index], dtype=jnp.int32),
         jnp.array([action], dtype=jnp.int32),
     )
-    mcts, mcts_child_idx = expand_mcts_tree_node(
+    mcts, mcts_child_idx = single.expand_leaf(
         mcts, jnp.array(leaf_index, dtype=jnp.int32), jnp.array(action, dtype=jnp.int32)
     )
 
     result_val = 1
 
     # Backprop Arena
-    arena = backpropagate(
+    arena = batched.backpropagate(
         arena,
         arena_child_idx,  # Use the child index as start of backprop (it was just expanded)
         jnp.array([result_val], dtype=jnp.int32),
@@ -129,7 +122,7 @@ def test_backprop_equivalence(tree_params):
     # Backprop MCTS
     # Note: backpropagate_mcts_tree_result takes initial_leaf_index.
     # If we just expanded, we usually backprop from the new leaf.
-    mcts = backpropagate_mcts_tree_result(
+    mcts = single.backpropagate(
         mcts, mcts_child_idx, jnp.array(result_val, dtype=jnp.int32)
     )
 
@@ -139,27 +132,27 @@ def test_backprop_equivalence(tree_params):
 def test_advance_equivalence(tree_params):
     B, N, A = tree_params["B"], tree_params["N"], tree_params["A"]
 
-    arena = ArenaTree.init(B, N, A)
-    mcts = MCTSTree.init(N, A)
+    arena = BatchedSearchTree.init(B, N, A)
+    mcts = SearchTree.init(N, A)
 
     # Expand a node so we can advance to it
     leaf_index = 0
     action = 5
 
-    arena, _ = expand_node(
+    arena, _ = batched.expand_leaf(
         arena,
         jnp.array([leaf_index], dtype=jnp.int32),
         jnp.array([action], dtype=jnp.int32),
     )
-    mcts, _ = expand_mcts_tree_node(
+    mcts, _ = single.expand_leaf(
         mcts, jnp.array(leaf_index, dtype=jnp.int32), jnp.array(action, dtype=jnp.int32)
     )
 
     # Advance Arena
-    arena = advance_tree(arena, jnp.array([action], dtype=jnp.int32))
+    arena = batched.advance_search(arena, jnp.array([action], dtype=jnp.int32))
 
     # Advance MCTS
-    mcts = advance_mcts_tree(mcts, jnp.array(action, dtype=jnp.int32))
+    mcts = single.advance_search(mcts, jnp.array(action, dtype=jnp.int32))
 
     assert_trees_equal(arena, mcts)
 
@@ -167,17 +160,17 @@ def test_advance_equivalence(tree_params):
 def test_reset_on_invalid_advance_equivalence(tree_params):
     B, N, A = tree_params["B"], tree_params["N"], tree_params["A"]
 
-    arena = ArenaTree.init(B, N, A)
-    mcts = MCTSTree.init(N, A)
+    arena = BatchedSearchTree.init(B, N, A)
+    mcts = SearchTree.init(N, A)
 
     # Try to advance to a node that hasn't been expanded (invalid move)
     action = 0
 
     # Advance Arena
-    arena = advance_tree(arena, jnp.array([action], dtype=jnp.int32))
+    arena = batched.advance_search(arena, jnp.array([action], dtype=jnp.int32))
 
     # Advance MCTS
-    mcts = advance_mcts_tree(mcts, jnp.array(action, dtype=jnp.int32))
+    mcts = single.advance_search(mcts, jnp.array(action, dtype=jnp.int32))
 
     # Both should have reset
     assert_trees_equal(arena, mcts)

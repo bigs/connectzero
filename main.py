@@ -5,7 +5,8 @@ import jax
 import jax.numpy as jnp
 from jax import Array
 
-from game import (
+from connectzero import batched, single
+from connectzero.game import (
     check_winner,
     check_winner_single,
     play_move,
@@ -13,16 +14,14 @@ from game import (
     print_board_state,
     print_board_states,
 )
-from mcts import run_mcts_search, run_mcts_search_single
-from tree import ArenaTree, MCTSTree, advance_mcts_tree, advance_tree
 
-run_mcts_search_batched = jax.vmap(run_mcts_search_single, in_axes=(0, 0, None, 0))
-advance_mcts_tree_batched = jax.vmap(advance_mcts_tree, in_axes=(0, 0))
+run_search_vmap = jax.vmap(single.run_mcts_search, in_axes=(0, 0, None, 0))
+advance_search_vmap = jax.vmap(single.advance_search, in_axes=(0, 0))
 
 
 def handle_player_turn(
-    tree: ArenaTree, board_state: jnp.ndarray, turn_count: jnp.ndarray
-) -> tuple[ArenaTree, jnp.ndarray]:
+    tree: batched.BatchedSearchTree, board_state: jnp.ndarray, turn_count: jnp.ndarray
+) -> tuple[batched.BatchedSearchTree, jnp.ndarray]:
     col = -1
     batch_size = board_state.shape[0]
     while col < 0 or col > 6:
@@ -44,7 +43,7 @@ def handle_player_turn(
     action = jnp.full((batch_size,), col, dtype=jnp.int32)
 
     # Advance tree first (using current root)
-    tree = advance_tree(tree, action)
+    tree = batched.advance_search(tree, action)
 
     # Play move
     player_who_plays = (turn_count % 2) + 1
@@ -57,8 +56,8 @@ def handle_player_turn(
 
 
 def handle_player_turn_single(
-    tree: MCTSTree, board_state: jnp.ndarray, turn_count: Array
-) -> tuple[MCTSTree, jnp.ndarray]:
+    tree: single.SearchTree, board_state: jnp.ndarray, turn_count: Array
+) -> tuple[single.SearchTree, jnp.ndarray]:
     col = -1
     while col < 0 or col > 6:
         try:
@@ -74,7 +73,7 @@ def handle_player_turn_single(
             print("Invalid input.")
 
     action = jnp.array(col, dtype=jnp.int32)
-    tree = advance_mcts_tree(tree, action)
+    tree = single.advance_search(tree, action)
     player_who_plays = (turn_count % 2) + 1
     board_state = play_move_single(board_state, action, player_who_plays)
 
@@ -127,16 +126,15 @@ def main():
             print_board_states(board_state)
 
             turn_count = jnp.count_nonzero(board_state, axis=(1, 2))
-            tree_prototype = MCTSTree.init(N=num_simulations * 42 + 1, A=7)
+            tree_prototype = single.SearchTree.init(N=num_simulations * 42 + 1, A=7)
             tree = jax.tree.map(lambda x: jnp.stack([x] * args.batch), tree_prototype)
 
             while jnp.any(check_winner(board_state, turn_count) == 0):
                 key, subkey = jax.random.split(key)
                 batch_keys = jax.random.split(subkey, args.batch)
-                is_interactive = jnp.array(args.interactive)
-                is_player_turn = is_interactive & (jnp.any(turn_count % 2 != 0))
+                # is_player_turn = is_interactive & (jnp.any(turn_count % 2 != 0))
 
-                tree, best_action, board_state = run_mcts_search_batched(
+                tree, best_action, board_state = run_search_vmap(
                     tree, board_state, num_simulations, batch_keys
                 )
                 turn_count = jnp.count_nonzero(board_state, axis=(1, 2))
@@ -150,7 +148,7 @@ def main():
             print_board_state(board_state)
 
             turn_count = jnp.count_nonzero(board_state)
-            tree = MCTSTree.init(N=num_simulations * 42 + 1, A=7)
+            tree = single.SearchTree.init(N=num_simulations * 42 + 1, A=7)
 
             while check_winner_single(board_state, turn_count) == 0:
                 key, subkey = jax.random.split(key)
@@ -162,7 +160,7 @@ def main():
                     )
                     turn_count = jnp.count_nonzero(board_state)
                 else:
-                    tree, best_action, board_state = run_mcts_search_single(
+                    tree, best_action, board_state = single.run_mcts_search(
                         tree, board_state, num_simulations, subkey
                     )
                     turn_count = jnp.count_nonzero(board_state)
@@ -186,7 +184,9 @@ def main():
         board_state = starting_board_state
 
         turn_count = jnp.count_nonzero(board_state, axis=(1, 2))
-        tree = ArenaTree.init(B=batch_size, N=num_simulations * 42 + 1, A=7)
+        tree = batched.BatchedSearchTree.init(
+            B=batch_size, N=num_simulations * 42 + 1, A=7
+        )
 
         while jnp.any(check_winner(board_state, turn_count) == 0):
             key, subkey = jax.random.split(key)
@@ -196,7 +196,7 @@ def main():
                 tree, board_state = handle_player_turn(tree, board_state, turn_count)
                 turn_count = jnp.count_nonzero(board_state, axis=(1, 2))
             else:
-                tree, best_action, board_state = run_mcts_search(
+                tree, best_action, board_state = batched.run_mcts_search(
                     tree, board_state, num_simulations, subkey
                 )
                 turn_count = jnp.count_nonzero(board_state, axis=(1, 2))
