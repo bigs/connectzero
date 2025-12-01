@@ -1,5 +1,5 @@
 [project]
-name = "mcts-connect-four"
+name = "connectzero"
 version = "0.1.0"
 description = "Connect Four agent using Monte Carlo Tree Search"
 readme = "README.md"
