@@ -242,17 +242,31 @@ def select_leaf_mcts(tree: MCTSTree, board_state: jnp.ndarray) -> SelectResultMC
             state.current_node_index,
         )
 
-        new_board_state = play_move_single(
+        prospective_board_state = play_move_single(
             state.board_state, best_action, (state.turn_count % 2) + 1
         )
-        new_winner = check_winner_single(new_board_state, state.turn_count + 1)
-        is_unfinished = new_winner == 0
+        new_board_state = jnp.where(
+            child_exists,
+            prospective_board_state,
+            state.board_state,
+        )
+
+        prospective_winner = check_winner_single(
+            prospective_board_state, state.turn_count + 1
+        )
+        new_winner = jnp.where(child_exists, prospective_winner, state.winner)
+
+        is_unfinished = prospective_winner == 0
 
         # Remain active only if we have not discovered a leaf node
         new_trajectory_active = child_exists & is_unfinished
 
         # Iterate
-        new_turn_count = state.turn_count + 1
+        new_turn_count = jnp.where(
+            child_exists,
+            state.turn_count + 1,
+            state.turn_count,
+        )
 
         return state._replace(
             current_node_index=new_current_node_index,
