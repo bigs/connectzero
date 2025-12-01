@@ -7,6 +7,11 @@ The goal of this project is to recreate the results of AlphaZero and MuZero for 
 1. **Pure MCTS** (Completed): The first phase is to implement a pure MCTS agent. The MCTS algorithm is complex enough, that I wanted to address it in isolation before adding the network element. Since the search space is relatively small compared to other games, the level of play of the pure MCTS agent is actually decent.
 
 2. **AlphaZero Style Policy/Value network** (In progress): The second phase is to implement a policy and value network that can be used to guide the MCTS search. Trained via self-play.
+  - [x] Training training data export helper functions
+  - [ ] Implement policy/value (PV) network in Equinox
+  - [ ] Implement training data serialization with Parquet or Huggingface Datasets
+  - [ ] Implement PUCT with the PV network
+  - [ ] Implement full training loop
 
 3. **MuZero Style Policy/Value network** (Not started): The third phase is to implement a MuZero-style policy and value network that can be used to guide the MCTS search. Relies on latent board representation and is also trained via self-play.
 
