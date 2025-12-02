@@ -8,7 +8,7 @@ The goal of this project is to recreate the results of AlphaZero and MuZero for 
 
 2. **AlphaZero Style Policy/Value network** (In progress): The second phase is to implement a policy and value network that can be used to guide the MCTS search. Trained via self-play.
   - [x] Training training data export helper functions
-  - [ ] Implement policy/value (PV) network in Equinox
+  - [x] Implement policy/value (PV) network in Equinox
   - [ ] Implement training data serialization with Parquet or Huggingface Datasets
   - [ ] Implement PUCT with the PV network
   - [ ] Implement full training loop
