@@ -23,6 +23,7 @@ project-includes = [
 
 [dependency-groups]
 dev = [
+    "ipython>=9.7.0",
     "pylance>=0.39.0",
     "pyrefly>=0.42.3",
     "pytest>=9.0.1",
