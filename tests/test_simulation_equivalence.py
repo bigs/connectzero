@@ -11,8 +11,6 @@ def params():
 
 
 def test_simulate_equivalence(params):
-    B = params["B"]
-
     key = jax.random.PRNGKey(42)
 
     # Empty board
@@ -37,8 +35,6 @@ def test_simulate_equivalence(params):
 
 
 def test_simulate_equivalence_midgame(params):
-    B = params["B"]
-
     key = jax.random.PRNGKey(101)
 
     # Midgame board
@@ -71,7 +67,6 @@ def test_simulate_equivalence_midgame(params):
 
 def test_simulate_equivalence_winning_state(params):
     # If the state is already winning, simulation should return result immediately
-    B = params["B"]
     key = jax.random.PRNGKey(99)
 
     board_state = jnp.zeros((6, 7), dtype=jnp.int32)

@@ -12,6 +12,7 @@ dependencies = [
     "numpy>=2.3.5",
     "optax>=0.2.6",
     "orbax-checkpoint>=0.11.30",
+    "pyarrow>=22.0.0",
     "torch>=2.9.1",
 ]
 

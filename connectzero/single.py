@@ -449,10 +449,11 @@ def run_mcts_search(
         key: JAX PRNG key.
 
     Returns:
-        tuple[SearchTree, jnp.ndarray, jnp.ndarray]:
+        tuple[SearchTree, jnp.ndarray, jnp.ndarray, TrainingSample]:
         - Updated SearchTree (advanced to the chosen action).
         - The chosen action (int32).
         - The new board state (after chosen action).
+        - The training sample.
     """
 
     def mcts_step(i: int, state: MCTSLoopState) -> MCTSLoopState:
@@ -510,12 +511,16 @@ def run_mcts_search(
     best_action = jnp.argmax(root_visits)
 
     turn_count = jnp.sum(jnp.where(board_state == 0, 0, 1))
+
+    # Extract training data
+    sample = extract_training_data(final_state.tree, board_state, turn_count)
+
     player_who_plays = (turn_count % 2) + 1
     new_board_state = play_move_single(board_state, best_action, player_who_plays)
 
     next_tree = advance_search(final_state.tree, best_action)
 
-    return next_tree, best_action, new_board_state
+    return next_tree, best_action, new_board_state, sample
 
 
 def extract_training_data(

@@ -288,6 +288,7 @@ dependencies = [
     { name = "numpy" },
     { name = "optax" },
     { name = "orbax-checkpoint" },
+    { name = "pyarrow" },
     { name = "torch" },
 ]
 
@@ -309,6 +310,7 @@ requires-dist = [
     { name = "numpy", specifier = ">=2.3.5" },
     { name = "optax", specifier = ">=0.2.6" },
     { name = "orbax-checkpoint", specifier = ">=0.11.30" },
+    { name = "pyarrow", specifier = ">=22.0.0" },
     { name = "torch", specifier = ">=2.9.1" },
 ]
 

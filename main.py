@@ -1,12 +1,16 @@
 import argparse
 import time
+from collections import deque
 
 import jax
 import jax.numpy as jnp
+import pyarrow as pa
+import pyarrow.parquet as pq
 from jax import Array
 
 from connectzero import batched, single
 from connectzero.game import (
+    TrainingSample,
     check_winner,
     check_winner_single,
     play_move,
@@ -14,6 +18,75 @@ from connectzero.game import (
     print_board_state,
     print_board_states,
 )
+
+
+def save_trajectories(samples: list[TrainingSample], filename: str):
+    """
+    Save a list of TrainingSample named tuples to a Parquet file.
+    """
+    # Convert list of NamedTuples to a dictionary of lists
+    # We use jax.device_get to ensure we have numpy arrays on CPU
+    # data = {
+    #     "board_state": [jax.device_get(s.board_state) for s in samples],
+    #     "policy_target": [jax.device_get(s.policy_target) for s in samples],
+    #     "value_target": [jax.device_get(s.value_target) for s in samples],
+    #     "turn_count": [jax.device_get(s.turn_count) for s in samples],
+    # }
+
+    # Verify lengths
+    n = len(samples)
+    if n == 0:
+        return
+
+    # Flatten if we have batches?
+    # If samples come from batch mode, board_state might be [B, 6, 7].
+    # Arrow can handle nested lists, or we can flatten the list of samples first.
+    # For simplicity, let's assume we flatten the batch dimension if it exists.
+
+    # Actually, let's handle the flattening in the collection phase or just let Arrow handle it.
+    # But wait, if s.board_state is [B, 6, 7], we probably want B rows in the parquet file.
+
+    flat_data = {
+        "board_state": [],
+        "policy_target": [],
+        "value_target": [],
+        "turn_count": [],
+    }
+
+    for s in samples:
+        b_state = jax.device_get(s.board_state)
+        p_target = jax.device_get(s.policy_target)
+        v_target = jax.device_get(s.value_target)
+        t_count = jax.device_get(s.turn_count)
+
+        # Check if batched (ndim=3 for board_state [B, H, W])
+        if b_state.ndim == 3:
+            # Iterate over batch dimension
+            B = b_state.shape[0]
+            for i in range(B):
+                flat_data["board_state"].append(b_state[i].flatten().tolist())
+                flat_data["policy_target"].append(p_target[i].tolist())
+                flat_data["value_target"].append(v_target[i].item())
+                flat_data["turn_count"].append(t_count[i].item())
+        else:
+            # Single game
+            flat_data["board_state"].append(b_state.flatten().tolist())
+            flat_data["policy_target"].append(p_target.tolist())
+            flat_data["value_target"].append(v_target.item())
+            flat_data["turn_count"].append(t_count.item())
+
+    # Create Arrow Table
+    # We need to explicit schema or let it infer.
+    # board_state will be List<int32> or FixedSizeList
+
+    table = pa.Table.from_pydict(flat_data)
+
+    # Write to Parquet
+    # Append? Parquet doesn't support append easily. usually we write new files.
+    # But the requirement was "write them out... at the end".
+    pq.write_table(table, filename)
+    print(f"Saved {len(flat_data['board_state'])} samples to {filename}")
+
 
 run_search_vmap = jax.vmap(single.run_mcts_search, in_axes=(0, 0, None, 0))
 advance_search_vmap = jax.vmap(single.advance_search, in_axes=(0, 0))
@@ -113,10 +186,20 @@ def main():
         default=10000,
         help="Number of MCTS simulations per move (default: 10000)",
     )
+    parser.add_argument(
+        "-s",
+        "--save-trajectories",
+        type=str,
+        default=None,
+        help="Path to save trajectories (Parquet format). If not set, data is not saved.",
+    )
     args = parser.parse_args()
 
     key = jax.random.PRNGKey(args.seed)
     num_simulations = args.simulations
+
+    replay_buffer = deque(maxlen=100000)
+    game_history = []
 
     if args.single:
         if args.batch > 1:
@@ -134,11 +217,29 @@ def main():
                 batch_keys = jax.random.split(subkey, args.batch)
                 # is_player_turn = is_interactive & (jnp.any(turn_count % 2 != 0))
 
-                tree, best_action, board_state = run_search_vmap(
+                tree, best_action, board_state, sample = run_search_vmap(
                     tree, board_state, num_simulations, batch_keys
                 )
+
+                # Collect samples
+                # sample is a TrainingSample where each field is [B, ...]
+                # We convert to CPU immediately
+                game_history.append(jax.device_get(sample))
+
                 turn_count = jnp.count_nonzero(board_state, axis=(1, 2))
                 print_board_states(board_state)
+
+            # Game Over
+            print("Game Over")
+            # Add to replay buffer
+            for s in game_history:
+                replay_buffer.append(s)
+
+            # Save to disk
+            if args.save_trajectories:
+                timestamp = int(time.time())
+                filename = f"{args.save_trajectories}_{timestamp}.parquet"
+                save_trajectories(list(replay_buffer), filename)
 
         else:
             # Single Game Mode
@@ -160,12 +261,24 @@ def main():
                     )
                     turn_count = jnp.count_nonzero(board_state)
                 else:
-                    tree, best_action, board_state = single.run_mcts_search(
+                    tree, best_action, board_state, sample = single.run_mcts_search(
                         tree, board_state, num_simulations, subkey
                     )
+                    game_history.append(jax.device_get(sample))
+
                     turn_count = jnp.count_nonzero(board_state)
                     print_board_state(board_state)
                     print("Best Action:", best_action)
+
+            # Game Over
+            print("Game Over")
+            for s in game_history:
+                replay_buffer.append(s)
+
+            if args.save_trajectories:
+                timestamp = int(time.time())
+                filename = f"{args.save_trajectories}_{timestamp}.parquet"
+                save_trajectories(list(replay_buffer), filename)
 
     else:
         # Batch Mode
@@ -196,12 +309,24 @@ def main():
                 tree, board_state = handle_player_turn(tree, board_state, turn_count)
                 turn_count = jnp.count_nonzero(board_state, axis=(1, 2))
             else:
-                tree, best_action, board_state = batched.run_mcts_search(
+                tree, best_action, board_state, sample = batched.run_mcts_search(
                     tree, board_state, num_simulations, subkey
                 )
+                game_history.append(jax.device_get(sample))
+
                 turn_count = jnp.count_nonzero(board_state, axis=(1, 2))
                 print_board_states(board_state)
                 print("Best Action:", best_action)
+
+        # Game Over
+        print("Game Over")
+        for s in game_history:
+            replay_buffer.append(s)
+
+        if args.save_trajectories:
+            timestamp = int(time.time())
+            filename = f"{args.save_trajectories}_{timestamp}.parquet"
+            save_trajectories(list(replay_buffer), filename)
 
 
 if __name__ == "__main__":

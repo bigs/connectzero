@@ -14,8 +14,8 @@ class TrainingSample(NamedTuple):
 
     board_state: jnp.ndarray
     policy_target: jnp.ndarray
-    value_target: jax.ndarray
-    turn_count: jax.ndarray
+    value_target: Array
+    turn_count: Array
 
 
 def play_move(

@@ -426,7 +426,7 @@ def run_mcts_search(
     board_state: jnp.ndarray,
     num_simulations: int,
     key: jnp.ndarray,
-) -> tuple[BatchedSearchTree, jnp.ndarray, jnp.ndarray]:
+) -> tuple[BatchedSearchTree, jnp.ndarray, jnp.ndarray, TrainingSample]:
     """
     Run MCTS search on the given tree and board state.
     """
@@ -488,13 +488,17 @@ def run_mcts_search(
     batch_range = jnp.arange(tree.children_index.shape[0])
     root_visits = final_state.tree.children_visits[batch_range, tree.root_index, :]
     best_action = jnp.argmax(root_visits, axis=-1)
+
     turn_count = jnp.sum(jnp.where(board_state == 0, 0, 1), axis=(1, 2))
+
+    sample = extract_training_data(final_state.tree, board_state, turn_count)
+
     player_who_plays = (turn_count % 2) + 1
     new_board_state = play_move(board_state, best_action, player_who_plays)
 
     next_tree = advance_search(final_state.tree, best_action)
 
-    return next_tree, best_action, new_board_state
+    return next_tree, best_action, new_board_state, sample
 
 
 def extract_training_data(
