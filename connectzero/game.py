@@ -182,3 +182,29 @@ def print_board_states(board_states: jnp.ndarray) -> None:
 
 def print_board_state(board_state: jnp.ndarray) -> None:
     print_board_states(jnp.expand_dims(board_state, axis=0))
+
+
+def to_model_input(board_state: jnp.ndarray, turn_count: jnp.ndarray) -> jnp.ndarray:
+    """
+    Convert a game state into the appropriate input for our policy/value network.
+
+    The current player's tokens will always be in channel one, the other player's
+    tokens will be in channel two, and the empty spaces will be in channel three.
+
+    Args:
+        board_state: [6, 7] array of board state, dtype=int32.
+        turn_count: Array, dtype=int32. Current turn count.
+
+    Returns:
+        [3, 6, 7] array of model input, dtype=float32.
+    """
+    current_player = (turn_count % 2) + 1
+    channel_one = jnp.where(board_state == current_player, 1, 0)
+    channel_two = jnp.where(board_state == (current_player % 2) + 1, 1, 0)
+    channel_three = jnp.where(board_state == 0, 1, 0)
+    return jnp.stack([channel_one, channel_two, channel_three], axis=0).astype(
+        jnp.float32
+    )
+
+
+to_model_input_batched = jax.vmap(to_model_input, in_axes=(0, 0))
