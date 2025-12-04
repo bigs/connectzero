@@ -216,52 +216,7 @@ def get_unique_filename(directory: str) -> str:
     return full_path
 
 
-def main():
-    parser = argparse.ArgumentParser(description="MCTS Connect Four")
-    parser.add_argument(
-        "--seed",
-        type=int,
-        default=int(time.time()),
-        help="Random seed for PRNG key (default: current timestamp)",
-    )
-    parser.add_argument(
-        "--interactive",
-        action="store_true",
-        help="Play interactively against the computer (Computer goes first)",
-    )
-    parser.add_argument(
-        "-b",
-        "--batch",
-        type=int,
-        default=1,
-        help="Batch size for simulation (default: 1)",
-    )
-    parser.add_argument(
-        "--single",
-        action="store_true",
-        help="Use single-game optimized mode (ignores --batch)",
-    )
-    parser.add_argument(
-        "--simulations",
-        type=int,
-        default=10000,
-        help="Number of MCTS simulations per move (default: 10000)",
-    )
-    parser.add_argument(
-        "-o",
-        "--out",
-        type=str,
-        default=None,
-        help="Directory path to save trajectories. If not set, data is not saved.",
-    )
-    parser.add_argument(
-        "-p",
-        "--puct",
-        action="store_true",
-        help="Use PUCT with a randomly initialized neural network (only with --single)",
-    )
-    args = parser.parse_args()
-
+def run_simulate(args):
     key = jax.random.PRNGKey(args.seed)
     num_simulations = args.simulations
 
@@ -412,6 +367,66 @@ def main():
         if args.out:
             filename = get_unique_filename(args.out)
             save_trajectories(list(replay_buffer), filename)
+
+
+def main():
+    parser = argparse.ArgumentParser(description="MCTS Connect Four")
+
+    # Global arguments
+    parser.add_argument(
+        "--seed",
+        type=int,
+        default=int(time.time()),
+        help="Random seed for PRNG key (default: current timestamp)",
+    )
+    parser.add_argument(
+        "-o",
+        "--out",
+        type=str,
+        default=None,
+        help="Directory path to save trajectories. If not set, data is not saved.",
+    )
+    parser.add_argument(
+        "-b",
+        "--batch",
+        type=int,
+        default=1,
+        help="Batch size for simulation (default: 1)",
+    )
+
+    subparsers = parser.add_subparsers(dest="command", help="Subcommands")
+
+    # Simulate subcommand
+    simulate_parser = subparsers.add_parser("simulate", help="Run MCTS simulation")
+    simulate_parser.add_argument(
+        "--interactive",
+        action="store_true",
+        help="Play interactively against the computer (Computer goes first)",
+    )
+    simulate_parser.add_argument(
+        "--single",
+        action="store_true",
+        help="Use single-game optimized mode (ignores --batch)",
+    )
+    simulate_parser.add_argument(
+        "--simulations",
+        type=int,
+        default=10000,
+        help="Number of MCTS simulations per move (default: 10000)",
+    )
+    simulate_parser.add_argument(
+        "-p",
+        "--puct",
+        action="store_true",
+        help="Use PUCT with a randomly initialized neural network (only with --single)",
+    )
+
+    args = parser.parse_args()
+
+    if args.command == "simulate":
+        run_simulate(args)
+    else:
+        parser.print_help()
 
 
 if __name__ == "__main__":
