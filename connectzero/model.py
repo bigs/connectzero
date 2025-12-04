@@ -1,3 +1,5 @@
+import json
+
 import equinox as eqx
 import jax
 import jax.numpy as jnp
@@ -160,3 +162,21 @@ class ConnectZeroModel(eqx.Module):
         policy, state = self.policy_head(x, state)
         value, state = self.value_head(x, state)
         return (policy, value), state
+
+
+def save(
+    filename: str, hyperparams: dict, model: ConnectZeroModel, state: eqx.nn.State
+):
+    with open(filename, "wb") as f:
+        hyperparam_str = json.dumps(hyperparams)
+        f.write((hyperparam_str + "\n").encode())
+        eqx.tree_serialise_leaves(f, (model, state))
+
+
+def load(filename: str) -> tuple[ConnectZeroModel, eqx.nn.State]:
+    with open(filename, "rb") as f:
+        hyperparams = json.loads(f.readline().decode())
+        model, state = eqx.nn.make_with_state(ConnectZeroModel)(
+            key=jax.random.PRNGKey(0), **hyperparams
+        )
+        return eqx.tree_deserialise_leaves(f, (model, state))
