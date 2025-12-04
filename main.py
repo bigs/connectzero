@@ -2,6 +2,7 @@ import argparse
 import time
 from collections import deque
 
+import equinox as eqx
 import jax
 import jax.numpy as jnp
 import pyarrow as pa
@@ -18,6 +19,7 @@ from connectzero.game import (
     print_board_state,
     print_board_states,
 )
+from connectzero.model import ConnectZeroModel
 
 
 def save_trajectories(samples: list[TrainingSample], filename: str):
@@ -235,6 +237,12 @@ def main():
         default=None,
         help="Path to save trajectories (Parquet format). If not set, data is not saved.",
     )
+    parser.add_argument(
+        "-p",
+        "--puct",
+        action="store_true",
+        help="Use PUCT with a randomly initialized neural network (only with --single)",
+    )
     args = parser.parse_args()
 
     key = jax.random.PRNGKey(args.seed)
@@ -244,6 +252,14 @@ def main():
     game_history = []
 
     if args.single:
+        model_tuple = None
+        if args.puct:
+            key, model_key = jax.random.split(key)
+            model, model_state = eqx.nn.make_with_state(ConnectZeroModel)(model_key)
+            model = eqx.nn.inference_mode(model)
+            model_tuple = (model, model_state)
+            print("Using PUCT with randomly initialized neural network")
+
         if args.batch > 1:
             print("Running new engine in batch mode")
             board_state = jnp.zeros((args.batch, 6, 7), dtype=jnp.int32)
@@ -260,7 +276,12 @@ def main():
                 # is_player_turn = is_interactive & (jnp.any(turn_count % 2 != 0))
 
                 tree, best_action, board_state, sample = run_search_vmap(
-                    tree, board_state, num_simulations, jnp.sqrt(2), batch_keys, None
+                    tree,
+                    board_state,
+                    num_simulations,
+                    jnp.sqrt(2),
+                    batch_keys,
+                    model_tuple,
                 )
 
                 # Collect samples
@@ -304,7 +325,12 @@ def main():
                     turn_count = jnp.count_nonzero(board_state)
                 else:
                     tree, best_action, board_state, sample = single.run_mcts_search(
-                        tree, board_state, num_simulations, jnp.sqrt(2), subkey, None
+                        tree,
+                        board_state,
+                        num_simulations,
+                        jnp.sqrt(2),
+                        subkey,
+                        model_tuple,
                     )
                     game_history.append(jax.device_get(sample))
 

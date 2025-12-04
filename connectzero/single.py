@@ -289,7 +289,7 @@ def expand_leaf(
         model_input = to_model_input(board_state, turn_count)
         (priors, value), _ = model(model_input, model_state)
         priors = jax.nn.softmax(priors)
-        return priors, value
+        return priors, jnp.squeeze(value)
 
     node_value = None
     if model:
@@ -521,7 +521,7 @@ class MCTSLoopState(NamedTuple):
     tree: SearchTree
 
 
-@jax.jit(static_argnames=["num_simulations"])
+@eqx.filter_jit
 def run_mcts_search(
     tree: SearchTree,
     board_state: jnp.ndarray,
