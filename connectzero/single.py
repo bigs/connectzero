@@ -1,5 +1,7 @@
+import functools
 from typing import NamedTuple
 
+import equinox as eqx
 import jax
 import jax.numpy as jnp
 from jax import Array
@@ -8,8 +10,10 @@ from connectzero.game import (
     TrainingSample,
     check_winner_single,
     play_move_single,
+    to_model_input,
     trajectory_is_active,
 )
+from connectzero.model import ConnectZeroModel
 
 
 class SearchTree(NamedTuple):
@@ -39,6 +43,10 @@ class SearchTree(NamedTuple):
     # Divide by visits to get Q.
     children_values: jnp.ndarray  # [N, A], dtype=float32
 
+    # Prior probabilities for each action from this node.
+    # Only used when using PUCT.
+    children_priors: jnp.ndarray  # [N, A], dtype=float32
+
     ### Allocator State
     # Tracks the next free slot in the 'N' dimension.
     next_node_index: Array  # dtype=int32
@@ -55,6 +63,7 @@ class SearchTree(NamedTuple):
             action_from_parent=jnp.full((N), -1, dtype=jnp.int32),
             children_visits=jnp.zeros((N, A), dtype=jnp.int32),
             children_values=jnp.zeros((N, A), dtype=jnp.float32),
+            children_priors=jnp.full((N, A), jnp.nan, dtype=jnp.float32),
             next_node_index=1,
             root_index=0,
         )
@@ -93,12 +102,17 @@ class SelectResult(NamedTuple):
     winner: Array  # dtype=int32
 
 
-def select_leaf(tree: SearchTree, board_state: jnp.ndarray) -> SelectResult:
+class SelectLeafOptions(NamedTuple):
+    use_puct: bool = False
+    c: Array = jnp.sqrt(2)
+
+
+def select_leaf(
+    tree: SearchTree, board_state: jnp.ndarray, options: SelectLeafOptions
+) -> SelectResult:
     """
     Select a leaf node to expand.
     """
-
-    c = jnp.sqrt(2)
 
     def compute_ucb_values(
         tree: SearchTree,
@@ -122,18 +136,53 @@ def select_leaf(tree: SearchTree, board_state: jnp.ndarray) -> SelectResult:
         q_values = jnp.where(visits > 0, total_values / safe_visits, 0.0)
         parent_visits = jnp.sum(visits)  # scalar now
         safe_parent_visits = jnp.maximum(parent_visits, 1)
-        exploration = c * jnp.sqrt(jnp.log(safe_parent_visits) / safe_visits)
+        exploration = options.c * jnp.sqrt(jnp.log(safe_parent_visits) / safe_visits)
         ucb = jnp.where(visits == 0, jnp.inf, q_values + exploration)
         # Mask full columns
         ucb = jnp.where(board_state[0, :] == 0, ucb, -jnp.inf)
 
         return ucb
 
-    def select_leaf_body(state: SelectState) -> SelectState:
-        ucb_values = compute_ucb_values(
-            tree, state.current_node_index, state.board_state
+    def compute_puct_values(
+        tree: SearchTree,
+        current_node_index: Array,
+        board_state: jnp.ndarray,
+    ) -> jnp.ndarray:
+        """
+        Compute the PUCT values for each action.
+
+        Args:
+            tree: The SearchTree.
+            current_node_index: Array, dtype=int32. Index of the current node.
+            board_state: [6, 7] array of board state, dtype=int32.
+
+        Returns:
+            Array of PUCT values for each action
+        """
+        priors = tree.children_priors[current_node_index, :]
+        values = tree.children_values[current_node_index, :]
+        visits = tree.children_visits[current_node_index, :]
+        safe_visits = jnp.maximum(visits, 1)
+        q_values = jnp.where(visits > 0, values / safe_visits, 0.0)
+        u_values = (
+            options.c
+            * priors
+            * jnp.sqrt(jnp.maximum(jnp.sum(visits), 1))
+            / (visits + 1)
         )
-        best_action = jnp.argmax(ucb_values)
+
+        puct = q_values + u_values
+        puct = jnp.where(board_state[0, :] == 0, puct, -jnp.inf)
+
+        return puct
+
+    def select_leaf_body(state: SelectState) -> SelectState:
+        values = (
+            compute_ucb_values(tree, state.current_node_index, state.board_state)
+            if not options.use_puct
+            else compute_puct_values(tree, state.current_node_index, state.board_state)
+        )
+        best_action = jnp.argmax(values)
 
         child_index = tree.children_index[state.current_node_index, best_action]
         child_exists = child_index != -1
@@ -202,7 +251,10 @@ def expand_leaf(
     tree: SearchTree,
     leaf_index: Array,
     action_to_expand: Array,
-) -> tuple[SearchTree, Array]:
+    board_state: jnp.ndarray,
+    model: ConnectZeroModel | None,
+    model_state: eqx.nn.State | None,
+) -> tuple[SearchTree, Array, Array | None]:
     """
     Expand the tree at the given leaf index and action.
 
@@ -210,11 +262,13 @@ def expand_leaf(
         tree: The SearchTree to expand.
         leaf_index: Array, dtype=int32. Index of the leaf node to expand.
         action_to_expand: Array, dtype=int32. Action to expand from the leaf.
-
+        board_state: [6, 7] array of board state, dtype=int32.
+        model: Optional (ConnectZeroModel, eqx.nn.State) tuple. If provided, the model will be used to evaluate the leaf node.
     Returns:
         A tuple containing:
         - The updated tree with the new node expanded.
         - Array, dtype=int32. The index of the newly created node.
+        - Optional Array, dtype=float32. The value of the leaf node.
     """
     next_node_index = tree.next_node_index
     next_next_node_index = next_node_index + 1
@@ -226,12 +280,44 @@ def expand_leaf(
         action_to_expand
     )
 
-    return tree._replace(
-        next_node_index=next_next_node_index,
-        children_index=next_children_index,
-        parents=next_parents,
-        action_from_parent=next_action_from_parent,
-    ), next_node_index
+    def _bootstrap_node(
+        board_state: jnp.ndarray,
+        turn_count: Array,
+        model: ConnectZeroModel,
+        model_state: eqx.nn.State,
+    ) -> tuple[jnp.ndarray, jnp.ndarray]:
+        model_input = to_model_input(board_state, turn_count)
+        (priors, value), _ = model(model_input, model_state)
+        priors = jax.nn.softmax(priors)
+        return priors, value
+
+    node_value = None
+    if model:
+        player_who_plays = (jnp.count_nonzero(board_state) % 2) + 1
+        new_board_state = play_move_single(
+            board_state, action_to_expand, player_who_plays
+        )
+        new_turn_count = jnp.count_nonzero(new_board_state)
+        node_priors, node_value = _bootstrap_node(
+            new_board_state, new_turn_count, model, model_state
+        )
+        node_value = node_value * -1
+    else:
+        node_priors = tree.children_priors[next_node_index, :]
+
+    return (
+        tree._replace(
+            next_node_index=next_next_node_index,
+            children_index=next_children_index,
+            parents=next_parents,
+            action_from_parent=next_action_from_parent,
+            children_priors=tree.children_priors.at[next_node_index, :].set(
+                node_priors
+            ),
+        ),
+        next_node_index,
+        node_value,
+    )
 
 
 class SimulateState(NamedTuple):
@@ -437,8 +523,13 @@ class MCTSLoopState(NamedTuple):
 
 @jax.jit(static_argnames=["num_simulations"])
 def run_mcts_search(
-    tree: SearchTree, board_state: jnp.ndarray, num_simulations: int, key: jnp.ndarray
-) -> tuple[SearchTree, jnp.ndarray, jnp.ndarray]:
+    tree: SearchTree,
+    board_state: jnp.ndarray,
+    num_simulations: int,
+    c_term: Array,
+    key: jnp.ndarray,
+    model: tuple[ConnectZeroModel, eqx.nn.State] | None,
+) -> tuple[SearchTree, jnp.ndarray, jnp.ndarray, TrainingSample]:
     """
     Run MCTS search on the given tree and board state (single game version).
 
@@ -447,7 +538,7 @@ def run_mcts_search(
         board_state: [6, 7] array, dtype=int32.
         num_simulations: Number of MCTS iterations.
         key: JAX PRNG key.
-
+        model: Optional ConnectZeroModel. If provided, the model will be used to evaluate the leaf nodes with PUCT.
     Returns:
         tuple[SearchTree, jnp.ndarray, jnp.ndarray, TrainingSample]:
         - Updated SearchTree (advanced to the chosen action).
@@ -456,10 +547,16 @@ def run_mcts_search(
         - The training sample.
     """
 
-    def mcts_step(i: int, state: MCTSLoopState) -> MCTSLoopState:
+    def mcts_step(
+        model: ConnectZeroModel | None,
+        model_state: eqx.nn.State | None,
+        i: int,
+        state: MCTSLoopState,
+    ) -> MCTSLoopState:
         key, tree = state.key, state.tree
         # Select
-        select_result = select_leaf(tree, board_state)
+        select_options = SelectLeafOptions(use_puct=model is not None, c=c_term)
+        select_result = select_leaf(tree, board_state, select_options)
 
         current_is_terminal = (select_result.winner != 0) | (
             select_result.turn_count >= 42
@@ -467,8 +564,13 @@ def run_mcts_search(
         should_expand = (select_result.action_to_expand >= 0) & ~current_is_terminal
 
         # Candidate expansion
-        expanded_tree, new_node_idx = expand_leaf(
-            tree, select_result.leaf_index, select_result.action_to_expand
+        expanded_tree, new_node_idx, results = expand_leaf(
+            tree,
+            select_result.leaf_index,
+            select_result.action_to_expand,
+            select_result.board_state,
+            model,
+            model_state,
         )
 
         # Apply expansion conditionally
@@ -480,12 +582,27 @@ def run_mcts_search(
             should_expand, new_node_idx, select_result.leaf_index
         )
 
-        # Simulate
+        pre_exp_parent = 2 - (select_result.turn_count % 2)
+        pre_exp_terminal_value = jnp.where(
+            select_result.winner == pre_exp_parent,
+            1,
+            jnp.where(select_result.winner == 3, 0, -1),
+        )
+
         player_who_plays = (select_result.turn_count % 2) + 1
         prospective_board = play_move_single(
             select_result.board_state,
             select_result.action_to_expand,
             player_who_plays,
+        )
+        terminal_winner = check_winner_single(
+            prospective_board, select_result.turn_count + 1
+        )
+
+        post_exp_terminal_value = jnp.where(
+            terminal_winner == player_who_plays,
+            1,
+            jnp.where(terminal_winner == 3, 0, -1),
         )
 
         sim_board = jnp.where(
@@ -494,17 +611,53 @@ def run_mcts_search(
         sim_turns = jnp.where(
             should_expand, select_result.turn_count + 1, select_result.turn_count
         )
-
-        key, subkey = jax.random.split(key)
-        results = simulate_rollout(subkey, sim_board, sim_turns)
+        if model is None:
+            # Simulate
+            key, subkey = jax.random.split(key)
+            results = simulate_rollout(subkey, sim_board, sim_turns)
+        else:
+            expanded_is_terminal = terminal_winner != 0
+            results = jnp.where(
+                current_is_terminal,
+                pre_exp_terminal_value,
+                jnp.where(
+                    should_expand & expanded_is_terminal,
+                    post_exp_terminal_value,
+                    results,
+                ),
+            )
 
         # Backpropagate
         tree = backpropagate(tree, target_node_idx, results)
 
-        return MCTSLoopState(key=key, tree=tree)
+        return state._replace(tree=tree, key=key)
+
+    model_state = None
+    if model is not None:
+        model, model_state = model
+
+        def _bootstrap_root(tree, board_state, model, model_state):
+            turn_count = jnp.count_nonzero(board_state)
+            model_input = to_model_input(board_state, turn_count)
+            (priors, value), _ = model(model_input, model_state)
+            priors = jax.nn.softmax(priors)
+            return tree._replace(
+                children_priors=tree.children_priors.at[tree.root_index, :].set(priors)
+            )
+
+        # Initialize root node priors if they are not set
+        tree = jax.lax.cond(
+            jnp.isnan(tree.children_priors[tree.root_index, 0]),
+            lambda t: _bootstrap_root(t, board_state, model, model_state),
+            lambda t: t,
+            tree,
+        )
 
     final_state: MCTSLoopState = jax.lax.fori_loop(
-        0, num_simulations, mcts_step, MCTSLoopState(key=key, tree=tree)
+        0,
+        num_simulations,
+        functools.partial(mcts_step, model, model_state),
+        MCTSLoopState(key=key, tree=tree),
     )
 
     root_visits = final_state.tree.children_visits[final_state.tree.root_index, :]
@@ -541,5 +694,6 @@ def extract_training_data(
     total_visits = jnp.sum(root_visits)
     safe_total_visits = jnp.maximum(total_visits, 1)
     policy_target = root_visits / safe_total_visits
-    value_target = jnp.sum(tree.children_values[tree.root_index, :]) / safe_total_visits
+    # Will be updated with the game result in the training loop
+    value_target = jnp.zeros(1, dtype=jnp.float32)
     return TrainingSample(board_state, policy_target, value_target, turn_count)

@@ -88,7 +88,49 @@ def save_trajectories(samples: list[TrainingSample], filename: str):
     print(f"Saved {len(flat_data['board_state'])} samples to {filename}")
 
 
-run_search_vmap = jax.vmap(single.run_mcts_search, in_axes=(0, 0, None, 0))
+def process_single_game_history(
+    history: list[TrainingSample],
+    final_board_state: jnp.ndarray,
+    final_turn_count: jnp.ndarray,
+) -> list[TrainingSample]:
+    """
+    Process game history to set value targets based on game outcome.
+
+    Uses negamax-style backwards propagation: the value target for each
+    sample is set based on whether the player whose turn it was at that
+    state eventually won, lost, or drew.
+
+    Args:
+        history: List of TrainingSample with zeroed value_target.
+        final_board_state: [6, 7] array, the final board state.
+        final_turn_count: The turn count at game end.
+
+    Returns:
+        List of TrainingSample with value_target set.
+    """
+    winner = int(check_winner_single(final_board_state, final_turn_count))
+
+    processed = []
+    for sample in history:
+        turn_count = int(sample.turn_count)
+        current_player = (turn_count % 2) + 1
+
+        if winner == 3:  # Draw
+            value = 0.0
+        elif winner == current_player:  # Current player won
+            value = 1.0
+        else:  # Current player lost
+            value = -1.0
+
+        updated_sample = sample._replace(
+            value_target=jnp.array([value], dtype=jnp.float32)
+        )
+        processed.append(updated_sample)
+
+    return processed
+
+
+run_search_vmap = jax.vmap(single.run_mcts_search, in_axes=(0, 0, None, None, 0, None))
 advance_search_vmap = jax.vmap(single.advance_search, in_axes=(0, 0))
 
 
@@ -218,7 +260,7 @@ def main():
                 # is_player_turn = is_interactive & (jnp.any(turn_count % 2 != 0))
 
                 tree, best_action, board_state, sample = run_search_vmap(
-                    tree, board_state, num_simulations, batch_keys
+                    tree, board_state, num_simulations, jnp.sqrt(2), batch_keys, None
                 )
 
                 # Collect samples
@@ -262,7 +304,7 @@ def main():
                     turn_count = jnp.count_nonzero(board_state)
                 else:
                     tree, best_action, board_state, sample = single.run_mcts_search(
-                        tree, board_state, num_simulations, subkey
+                        tree, board_state, num_simulations, jnp.sqrt(2), subkey, None
                     )
                     game_history.append(jax.device_get(sample))
 
@@ -272,7 +314,10 @@ def main():
 
             # Game Over
             print("Game Over")
-            for s in game_history:
+            processed_history = process_single_game_history(
+                game_history, board_state, turn_count
+            )
+            for s in processed_history:
                 replay_buffer.append(s)
 
             if args.save_trajectories:
