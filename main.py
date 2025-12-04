@@ -225,22 +225,22 @@ def run_simulate(args, parser):
     replay_buffer = deque(maxlen=100000)
     game_history = []
 
+    model_tuple = None
+    if args.puct:
+        if args.checkpoint:
+            print(f"Loading checkpoint from {args.checkpoint}")
+            model, model_state = load(args.checkpoint)
+        else:
+            print("Using PUCT with randomly initialized neural network")
+            key, model_key = jax.random.split(key)
+            model, model_state = eqx.nn.make_with_state(ConnectZeroModel)(model_key)
+
+        model = eqx.nn.inference_mode(model)
+        model_tuple = (model, model_state)
+    elif args.checkpoint:
+        parser.error("--checkpoint requires --puct to be set")
+
     if args.single:
-        model_tuple = None
-        if args.puct:
-            if args.checkpoint:
-                print(f"Loading checkpoint from {args.checkpoint}")
-                model, model_state = load(args.checkpoint)
-            else:
-                print("Using PUCT with randomly initialized neural network")
-                key, model_key = jax.random.split(key)
-                model, model_state = eqx.nn.make_with_state(ConnectZeroModel)(model_key)
-
-            model = eqx.nn.inference_mode(model)
-            model_tuple = (model, model_state)
-        elif args.checkpoint:
-            parser.error("--checkpoint requires --puct to be set")
-
         if args.batch > 1:
             print("Running new engine in batch mode")
             board_state = jnp.zeros((args.batch, 6, 7), dtype=jnp.int32)
@@ -372,7 +372,16 @@ def run_simulate(args, parser):
                 turn_count = jnp.count_nonzero(board_state, axis=(1, 2))
             else:
                 tree, best_action, board_state, sample = batched.run_mcts_search(
-                    tree, board_state, num_simulations, subkey
+                    tree,
+                    board_state,
+                    num_simulations,
+                    jnp.sqrt(2),
+                    subkey,
+                    model_tuple,
+                    args.temperature,
+                    args.temperature_depth,
+                    1.0,
+                    0.25,
                 )
                 game_history.append(jax.device_get(sample))
 
@@ -478,7 +487,7 @@ def main():
         "-p",
         "--puct",
         action="store_true",
-        help="Use PUCT with a randomly initialized neural network (only with --single)",
+        help="Use PUCT with a randomly initialized neural network",
     )
 
     simulate_parser.add_argument(
