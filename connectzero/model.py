@@ -141,7 +141,7 @@ class ConnectZeroModel(eqx.Module):
     policy_head: ConnectZeroPolicyHead
     value_head: ConnectZeroValueHead
 
-    def __init__(self, key, num_blocks: int = 7):
+    def __init__(self, key, num_blocks: int = 7, **kwargs):
         key, stemkey = jax.random.split(key)
         self.stem = ConnectZeroStem(stemkey)
         key, blockkeys = jax.random.split(key)
@@ -176,7 +176,9 @@ def save(
 def load(filename: str) -> tuple[ConnectZeroModel, eqx.nn.State]:
     with open(filename, "rb") as f:
         hyperparams = json.loads(f.readline().decode())
+
         model, state = eqx.nn.make_with_state(ConnectZeroModel)(
             key=jax.random.PRNGKey(0), **hyperparams
         )
-        return eqx.tree_deserialise_leaves(f, (model, state))
+        (model, state) = eqx.tree_deserialise_leaves(f, (model, state))
+        return model, state

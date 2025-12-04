@@ -521,6 +521,20 @@ class MCTSLoopState(NamedTuple):
     tree: SearchTree
 
 
+def add_dirichlet_noise(
+    tree: SearchTree, key: jnp.ndarray, alpha: float, epsilon: float
+) -> SearchTree:
+    """
+    Add Dirichlet noise to the root node priors.
+    """
+    noise = jax.random.dirichlet(key, jnp.full((7,), alpha))
+    priors = tree.children_priors[tree.root_index]
+    mixed_priors = (1 - epsilon) * priors + epsilon * noise
+    return tree._replace(
+        children_priors=tree.children_priors.at[tree.root_index].set(mixed_priors)
+    )
+
+
 @eqx.filter_jit
 def run_mcts_search(
     tree: SearchTree,
@@ -529,6 +543,10 @@ def run_mcts_search(
     c_term: Array,
     key: jnp.ndarray,
     model: tuple[ConnectZeroModel, eqx.nn.State] | None,
+    temperature: float = 1.0,
+    temperature_depth: int = 15,
+    dirichlet_alpha: float = 1.0,
+    dirichlet_epsilon: float = 0.25,
 ) -> tuple[SearchTree, jnp.ndarray, jnp.ndarray, TrainingSample]:
     """
     Run MCTS search on the given tree and board state (single game version).
@@ -539,6 +557,10 @@ def run_mcts_search(
         num_simulations: Number of MCTS iterations.
         key: JAX PRNG key.
         model: Optional ConnectZeroModel. If provided, the model will be used to evaluate the leaf nodes with PUCT.
+        temperature: Sampling temperature.
+        temperature_depth: Depth until which to apply temperature.
+        dirichlet_alpha: Dirichlet noise alpha parameter.
+        dirichlet_epsilon: Dirichlet noise epsilon (weight) parameter.
     Returns:
         tuple[SearchTree, jnp.ndarray, jnp.ndarray, TrainingSample]:
         - Updated SearchTree (advanced to the chosen action).
@@ -653,6 +675,10 @@ def run_mcts_search(
             tree,
         )
 
+        # Add Dirichlet noise to root priors for exploration
+        key, noise_key = jax.random.split(key)
+        tree = add_dirichlet_noise(tree, noise_key, dirichlet_alpha, dirichlet_epsilon)
+
     final_state: MCTSLoopState = jax.lax.fori_loop(
         0,
         num_simulations,
@@ -661,17 +687,52 @@ def run_mcts_search(
     )
 
     root_visits = final_state.tree.children_visits[final_state.tree.root_index, :]
-    best_action = jnp.argmax(root_visits)
+    turn_count = jnp.sum(jnp.where(board_state == 0, 0, 1))
+
+    legal_moves_mask = board_state[0, :] == 0
+    visit_counts = jnp.where(legal_moves_mask, root_visits, 0)
+
+    # Switch to greedy mode after temperature_depth moves
+    is_greedy = (temperature < 1e-6) | (turn_count >= temperature_depth)
+
+    # Sample action from the visit counts (with temperature)
+    def sample_action(key, visits, temp):
+        # Exponentiate visits by 1/temp
+        logits = jnp.log(visits + 1e-8) / temp
+        # Mask again to be safe (logits will be very negative for 0 visits)
+        logits = jnp.where(legal_moves_mask, logits, -jnp.inf)
+
+        # Gumbel-Max sampling
+        gumbel_noise = -jnp.log(-jnp.log(jax.random.uniform(key, logits.shape)))
+        return jnp.argmax(logits + gumbel_noise)
+
+    key, subkey = jax.random.split(key)
+    best_action = jax.lax.cond(
+        is_greedy,
+        lambda _: jnp.argmax(jnp.where(legal_moves_mask, visit_counts, -1)),
+        lambda k: sample_action(k, visit_counts, temperature),
+        subkey,
+    )
 
     turn_count = jnp.sum(jnp.where(board_state == 0, 0, 1))
+
+    # If the game is already over, we shouldn't play a move
+    current_winner = check_winner_single(board_state, turn_count)
+    is_terminal = (current_winner != 0) | (turn_count >= 42)
 
     # Extract training data
     sample = extract_training_data(final_state.tree, board_state, turn_count)
 
     player_who_plays = (turn_count % 2) + 1
-    new_board_state = play_move_single(board_state, best_action, player_who_plays)
+    prospective_board_state = play_move_single(
+        board_state, best_action, player_who_plays
+    )
+    new_board_state = jnp.where(is_terminal, board_state, prospective_board_state)
 
     next_tree = advance_search(final_state.tree, best_action)
+    next_tree = jax.tree.map(
+        lambda old, new: jnp.where(is_terminal, old, new), final_state.tree, next_tree
+    )
 
     return next_tree, best_action, new_board_state, sample
 

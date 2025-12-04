@@ -133,7 +133,9 @@ def process_single_game_history(
     return processed
 
 
-run_search_vmap = jax.vmap(single.run_mcts_search, in_axes=(0, 0, None, None, 0, None))
+run_search_vmap = jax.vmap(
+    single.run_mcts_search, in_axes=(0, 0, None, None, 0, None, None, None, None, None)
+)
 advance_search_vmap = jax.vmap(single.advance_search, in_axes=(0, 0))
 
 
@@ -249,6 +251,10 @@ def run_simulate(args, parser):
             tree_prototype = single.SearchTree.init(N=num_simulations * 42 + 1, A=7)
             tree = jax.tree.map(lambda x: jnp.stack([x] * args.batch), tree_prototype)
 
+            # In --single mode with batching, we need to ensure randomness.
+            # run_search_vmap uses the same key for all items in the batch if we pass a single key.
+            # We need to pass a batch of keys.
+
             while jnp.any(check_winner(board_state, turn_count) == 0):
                 key, subkey = jax.random.split(key)
                 batch_keys = jax.random.split(subkey, args.batch)
@@ -261,6 +267,10 @@ def run_simulate(args, parser):
                     jnp.sqrt(2),
                     batch_keys,
                     model_tuple,
+                    args.temperature,  # Pass temperature
+                    args.temperature_depth,
+                    1.0,  # dirichlet_alpha
+                    0.25,  # dirichlet_epsilon
                 )
 
                 # Collect samples
@@ -309,6 +319,10 @@ def run_simulate(args, parser):
                         jnp.sqrt(2),
                         subkey,
                         model_tuple,
+                        args.temperature,  # Pass temperature
+                        args.temperature_depth,
+                        1.0,  # dirichlet_alpha
+                        0.25,  # dirichlet_epsilon
                     )
                     game_history.append(jax.device_get(sample))
 
@@ -392,7 +406,9 @@ def run_initialize(args):
     if dirname:
         os.makedirs(dirname, exist_ok=True)
 
-    hyperparams = {"num_blocks": num_blocks}
+    hyperparams = {
+        "num_blocks": num_blocks,
+    }
     save(args.path, hyperparams, model, state)
     print(f"Model saved to {args.path}")
 
@@ -463,6 +479,19 @@ def main():
         "--puct",
         action="store_true",
         help="Use PUCT with a randomly initialized neural network (only with --single)",
+    )
+
+    simulate_parser.add_argument(
+        "--temperature",
+        type=float,
+        default=1.0,
+        help="Sampling temperature for early moves (default: 1.0)",
+    )
+    simulate_parser.add_argument(
+        "--temperature-depth",
+        type=int,
+        default=15,
+        help="Number of moves to apply temperature sampling before switching to greedy (default: 15)",
     )
 
     args = parser.parse_args()
