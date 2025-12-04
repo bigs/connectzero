@@ -20,7 +20,7 @@ from connectzero.game import (
     print_board_state,
     print_board_states,
 )
-from connectzero.model import ConnectZeroModel, save
+from connectzero.model import ConnectZeroModel, load, save
 
 
 def save_trajectories(samples: list[TrainingSample], filename: str):
@@ -216,7 +216,7 @@ def get_unique_filename(directory: str) -> str:
     return full_path
 
 
-def run_simulate(args):
+def run_simulate(args, parser):
     key = jax.random.PRNGKey(args.seed)
     num_simulations = args.simulations
 
@@ -226,11 +226,18 @@ def run_simulate(args):
     if args.single:
         model_tuple = None
         if args.puct:
-            key, model_key = jax.random.split(key)
-            model, model_state = eqx.nn.make_with_state(ConnectZeroModel)(model_key)
+            if args.checkpoint:
+                print(f"Loading checkpoint from {args.checkpoint}")
+                model, model_state = load(args.checkpoint)
+            else:
+                print("Using PUCT with randomly initialized neural network")
+                key, model_key = jax.random.split(key)
+                model, model_state = eqx.nn.make_with_state(ConnectZeroModel)(model_key)
+
             model = eqx.nn.inference_mode(model)
             model_tuple = (model, model_state)
-            print("Using PUCT with randomly initialized neural network")
+        elif args.checkpoint:
+            parser.error("--checkpoint requires --puct to be set")
 
         if args.batch > 1:
             print("Running new engine in batch mode")
@@ -446,6 +453,12 @@ def main():
         help="Number of MCTS simulations per move (default: 10000)",
     )
     simulate_parser.add_argument(
+        "--checkpoint",
+        type=str,
+        default=None,
+        help="Path to a checkpoint file to load (requires --puct)",
+    )
+    simulate_parser.add_argument(
         "-p",
         "--puct",
         action="store_true",
@@ -455,7 +468,7 @@ def main():
     args = parser.parse_args()
 
     if args.command == "simulate":
-        run_simulate(args)
+        run_simulate(args, parser)
     elif args.command == "initialize":
         run_initialize(args)
     else:
