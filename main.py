@@ -1,4 +1,5 @@
 import argparse
+import os
 import time
 from collections import deque
 
@@ -199,6 +200,22 @@ def handle_player_turn_single(
     return tree, board_state
 
 
+def get_unique_filename(directory: str) -> str:
+    if not os.path.exists(directory):
+        os.makedirs(directory, exist_ok=True)
+
+    timestamp = int(time.time())
+    filename = f"trajectory_{timestamp}.parquet"
+    full_path = os.path.join(directory, filename)
+
+    while os.path.exists(full_path):
+        timestamp += 1
+        filename = f"trajectory_{timestamp}.parquet"
+        full_path = os.path.join(directory, filename)
+
+    return full_path
+
+
 def main():
     parser = argparse.ArgumentParser(description="MCTS Connect Four")
     parser.add_argument(
@@ -231,11 +248,11 @@ def main():
         help="Number of MCTS simulations per move (default: 10000)",
     )
     parser.add_argument(
-        "-s",
-        "--save-trajectories",
+        "-o",
+        "--out",
         type=str,
         default=None,
-        help="Path to save trajectories (Parquet format). If not set, data is not saved.",
+        help="Directory path to save trajectories. If not set, data is not saved.",
     )
     parser.add_argument(
         "-p",
@@ -299,9 +316,8 @@ def main():
                 replay_buffer.append(s)
 
             # Save to disk
-            if args.save_trajectories:
-                timestamp = int(time.time())
-                filename = f"{args.save_trajectories}_{timestamp}.parquet"
+            if args.out:
+                filename = get_unique_filename(args.out)
                 save_trajectories(list(replay_buffer), filename)
 
         else:
@@ -346,9 +362,8 @@ def main():
             for s in processed_history:
                 replay_buffer.append(s)
 
-            if args.save_trajectories:
-                timestamp = int(time.time())
-                filename = f"{args.save_trajectories}_{timestamp}.parquet"
+            if args.out:
+                filename = get_unique_filename(args.out)
                 save_trajectories(list(replay_buffer), filename)
 
     else:
@@ -394,9 +409,8 @@ def main():
         for s in game_history:
             replay_buffer.append(s)
 
-        if args.save_trajectories:
-            timestamp = int(time.time())
-            filename = f"{args.save_trajectories}_{timestamp}.parquet"
+        if args.out:
+            filename = get_unique_filename(args.out)
             save_trajectories(list(replay_buffer), filename)
 
 
