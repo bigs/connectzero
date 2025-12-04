@@ -11,3 +11,4 @@ wheels/
 
 # Data
 *.parquet
+*.eqx

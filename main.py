@@ -20,7 +20,7 @@ from connectzero.game import (
     print_board_state,
     print_board_states,
 )
-from connectzero.model import ConnectZeroModel
+from connectzero.model import ConnectZeroModel, save
 
 
 def save_trajectories(samples: list[TrainingSample], filename: str):
@@ -369,6 +369,27 @@ def run_simulate(args):
             save_trajectories(list(replay_buffer), filename)
 
 
+def run_initialize(args):
+    key = jax.random.PRNGKey(args.seed)
+
+    # Default hyperparameters
+    num_blocks = 7
+
+    print(
+        f"Initializing model with seed {args.seed} and {num_blocks} residual blocks..."
+    )
+    model, state = eqx.nn.make_with_state(ConnectZeroModel)(key, num_blocks=num_blocks)
+
+    # Ensure directory exists
+    dirname = os.path.dirname(args.path)
+    if dirname:
+        os.makedirs(dirname, exist_ok=True)
+
+    hyperparams = {"num_blocks": num_blocks}
+    save(args.path, hyperparams, model, state)
+    print(f"Model saved to {args.path}")
+
+
 def main():
     parser = argparse.ArgumentParser(description="MCTS Connect Four")
 
@@ -395,6 +416,16 @@ def main():
     )
 
     subparsers = parser.add_subparsers(dest="command", help="Subcommands")
+
+    # Initialize subcommand
+    initialize_parser = subparsers.add_parser(
+        "initialize", help="Initialize a new model"
+    )
+    initialize_parser.add_argument(
+        "path",
+        type=str,
+        help="Path to save the initialized model",
+    )
 
     # Simulate subcommand
     simulate_parser = subparsers.add_parser("simulate", help="Run MCTS simulation")
@@ -425,6 +456,8 @@ def main():
 
     if args.command == "simulate":
         run_simulate(args)
+    elif args.command == "initialize":
+        run_initialize(args)
     else:
         parser.print_help()
 
