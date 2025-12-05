@@ -69,7 +69,14 @@ def train_loop(
     """
     Main training loop.
     """
-    model, state, opt_state = load_model(checkpoint_path)
+    learning_rate_schedule = optax.linear_schedule(2e-1, 2e-4, 100_000)
+
+    optimizer = optax.chain(
+        optax.add_decayed_weights(WEIGHT_DECAY),
+        optax.sgd(learning_rate_schedule, momentum=MOMENTUM),
+    )
+
+    model, state, opt_state = load_model(checkpoint_path, optimizer=optimizer)
 
     steps = 0
     if checkpoint_path:
@@ -79,12 +86,6 @@ def train_loop(
         if match:
             steps = int(match.group(1))
 
-    learning_rate_schedule = optax.linear_schedule(2e-1, 2e-4, 100_000)
-
-    optimizer = optax.chain(
-        optax.add_decayed_weights(WEIGHT_DECAY),
-        optax.sgd(learning_rate_schedule, momentum=MOMENTUM),
-    )
     if opt_state is None:
         opt_state = optimizer.init(eqx.filter(model, eqx.is_array))
 

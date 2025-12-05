@@ -184,7 +184,9 @@ def save(
 
 
 def load(
-    filename: str, opt_state: Optional[optax.OptState] = None
+    filename: str,
+    opt_state: Optional[optax.OptState] = None,
+    optimizer: Optional[optax.GradientTransformation] = None,
 ) -> tuple[ConnectZeroModel, eqx.nn.State, Optional[optax.OptState]]:
     with open(filename, "rb") as f:
         hyperparams = json.loads(f.readline().decode())
@@ -194,11 +196,15 @@ def load(
             key=jax.random.PRNGKey(0), **hyperparams
         )
 
-        if has_opt_state and opt_state is not None:
-            (model, state, opt_state) = eqx.tree_deserialise_leaves(
-                f, (model, state, opt_state)
-            )
-            return model, state, opt_state
-        else:
-            (model, state) = eqx.tree_deserialise_leaves(f, (model, state))
-            return model, state, None
+        if has_opt_state:
+            if opt_state is None and optimizer is not None:
+                opt_state = optimizer.init(eqx.filter(model, eqx.is_array))
+
+            if opt_state is not None:
+                (model, state, opt_state) = eqx.tree_deserialise_leaves(
+                    f, (model, state, opt_state)
+                )
+                return model, state, opt_state
+
+        (model, state) = eqx.tree_deserialise_leaves(f, (model, state))
+        return model, state, None
