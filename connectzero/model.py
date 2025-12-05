@@ -177,10 +177,11 @@ def save(
         hyperparams["has_opt_state"] = opt_state is not None
         hyperparam_str = json.dumps(hyperparams)
         f.write((hyperparam_str + "\n").encode())
+        # Serialize model/state first, then opt_state separately.
+        # This allows loading just model/state without needing to deserialize opt_state.
+        eqx.tree_serialise_leaves(f, (model, state))
         if opt_state is not None:
-            eqx.tree_serialise_leaves(f, (model, state, opt_state))
-        else:
-            eqx.tree_serialise_leaves(f, (model, state))
+            eqx.tree_serialise_leaves(f, opt_state)
 
 
 def load(
@@ -196,15 +197,17 @@ def load(
             key=jax.random.PRNGKey(0), **hyperparams
         )
 
+        # Always deserialize model/state first (they're serialized separately from opt_state)
+        (model, state) = eqx.tree_deserialise_leaves(f, (model, state))
+
+        # Only deserialize opt_state if it exists in file AND we can reconstruct its structure
         if has_opt_state:
             if opt_state is None and optimizer is not None:
                 opt_state = optimizer.init(eqx.filter(model, eqx.is_array))
 
             if opt_state is not None:
-                (model, state, opt_state) = eqx.tree_deserialise_leaves(
-                    f, (model, state, opt_state)
-                )
+                opt_state = eqx.tree_deserialise_leaves(f, opt_state)
                 return model, state, opt_state
+            # If has_opt_state but no optimizer provided, skip opt_state (inference mode)
 
-        (model, state) = eqx.tree_deserialise_leaves(f, (model, state))
         return model, state, None
