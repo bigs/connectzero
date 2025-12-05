@@ -34,7 +34,6 @@ def compute_loss(
     return policy_loss + value_loss, state
 
 
-# We use @eqx.filter_jit to JIT compile this function, handling Equinox modules correctly
 @eqx.filter_jit
 def make_step(
     model: ConnectZeroModel,
@@ -43,21 +42,15 @@ def make_step(
     batch: dict,
     optimizer: optax.GradientTransformation,
 ):
-    """
-    Performs a single optimization step.
-
-    1. Calculate gradients using jax.value_and_grad on loss_fn.
-    2. Update optimizer state and model parameters using optax.apply_updates.
-    """
     inputs = batch["board_state"]
     policy_targets = batch["policy_target"]
     value_targets = batch["value_target"]
-    (loss_value, state), grads = jax.value_and_grad(compute_loss, has_aux=True)(
+    (loss_value, state), grads = eqx.filter_value_and_grad(compute_loss, has_aux=True)(
         model, state, inputs, policy_targets, value_targets
     )
-    updates, opt_state = optimizer.update(grads, opt_state, model)
+    updates, new_opt_state = optimizer.update(grads, opt_state, model)
     model = eqx.apply_updates(model, updates)
-    return model, state, opt_state, loss_value
+    return model, state, new_opt_state, loss_value
 
 
 def train_loop(

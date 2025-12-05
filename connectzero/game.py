@@ -318,7 +318,8 @@ def reshape_transforms(examples):
 
 
 def create_dataloader(file_pattern: str) -> Dataset:
-    ds = load_dataset("parquet", data_files=file_pattern, split="train", shuffle=True)
+    ds = load_dataset("parquet", data_files=file_pattern, split="train")
+    ds = ds.shuffle()
     ds = ds.with_transform(reshape_transforms)
 
     return ds
