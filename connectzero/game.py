@@ -7,7 +7,7 @@ from jax import Array
 
 class TrainingSample(NamedTuple):
     """
-    A training sample is a tuple of (board_state, policy_target, value_target, turn_count).
+    A training sample is a tuple of (board_state, policy_target, value_target).
 
     Usable in single game and batched contexts.
     """
@@ -15,7 +15,6 @@ class TrainingSample(NamedTuple):
     board_state: jnp.ndarray
     policy_target: jnp.ndarray
     value_target: Array
-    turn_count: Array
 
 
 def play_move(

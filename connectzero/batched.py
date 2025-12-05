@@ -730,4 +730,5 @@ def extract_training_data(
     policy_target = root_visits / safe_total_visits[:, None]
     # Will be updated with the game result in the training loop
     value_target = jnp.zeros(tree.root_index.shape[0], dtype=jnp.float32)
-    return TrainingSample(board_state, policy_target, value_target, turn_count)
+    model_input = to_model_input_batched(board_state, turn_count)
+    return TrainingSample(model_input, policy_target, value_target)

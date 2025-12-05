@@ -29,54 +29,36 @@ def save_trajectories(samples: list[TrainingSample], filename: str):
     """
     # Convert list of NamedTuples to a dictionary of lists
     # We use jax.device_get to ensure we have numpy arrays on CPU
-    # data = {
-    #     "board_state": [jax.device_get(s.board_state) for s in samples],
-    #     "policy_target": [jax.device_get(s.policy_target) for s in samples],
-    #     "value_target": [jax.device_get(s.value_target) for s in samples],
-    #     "turn_count": [jax.device_get(s.turn_count) for s in samples],
-    # }
 
     # Verify lengths
     n = len(samples)
     if n == 0:
         return
 
-    # Flatten if we have batches?
-    # If samples come from batch mode, board_state might be [B, 6, 7].
-    # Arrow can handle nested lists, or we can flatten the list of samples first.
-    # For simplicity, let's assume we flatten the batch dimension if it exists.
-
-    # Actually, let's handle the flattening in the collection phase or just let Arrow handle it.
-    # But wait, if s.board_state is [B, 6, 7], we probably want B rows in the parquet file.
-
     flat_data = {
         "board_state": [],
         "policy_target": [],
         "value_target": [],
-        "turn_count": [],
     }
 
     for s in samples:
         b_state = jax.device_get(s.board_state)
         p_target = jax.device_get(s.policy_target)
         v_target = jax.device_get(s.value_target)
-        t_count = jax.device_get(s.turn_count)
 
-        # Check if batched (ndim=3 for board_state [B, H, W])
-        if b_state.ndim == 3:
+        # Check if batched (ndim=4 for board_state [B, 3, 6, 7])
+        if b_state.ndim == 4:
             # Iterate over batch dimension
             B = b_state.shape[0]
             for i in range(B):
                 flat_data["board_state"].append(b_state[i].flatten().tolist())
                 flat_data["policy_target"].append(p_target[i].tolist())
                 flat_data["value_target"].append(v_target[i].item())
-                flat_data["turn_count"].append(t_count[i].item())
         else:
             # Single game
             flat_data["board_state"].append(b_state.flatten().tolist())
             flat_data["policy_target"].append(p_target.tolist())
             flat_data["value_target"].append(v_target.item())
-            flat_data["turn_count"].append(t_count.item())
 
     # Create Arrow Table
     # We need to explicit schema or let it infer.
@@ -112,10 +94,11 @@ def process_single_game_history(
         List of TrainingSample with value_target set.
     """
     winner = int(check_winner_single(final_board_state, final_turn_count))
+    start_turn = int(final_turn_count) - len(history)
 
     processed = []
-    for sample in history:
-        turn_count = int(sample.turn_count)
+    for i, sample in enumerate(history):
+        turn_count = start_turn + i
         current_player = (turn_count % 2) + 1
 
         if winner == 3:  # Draw
