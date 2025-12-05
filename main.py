@@ -20,6 +20,7 @@ from connectzero.game import (
     save_trajectories,
 )
 from connectzero.model import ConnectZeroModel, load, save
+from connectzero.train import train_loop
 
 
 def process_single_game_history(
@@ -354,6 +355,18 @@ def run_initialize(args):
     print(f"Model saved to {args.path}")
 
 
+def run_train(args):
+    if not os.path.exists(args.save_dir):
+        os.makedirs(args.save_dir, exist_ok=True)
+
+    train_loop(
+        checkpoint_path=args.checkpoint_path,
+        data_pattern=args.data_pattern,
+        save_dir=args.save_dir,
+        batch_size=args.batch_size,
+    )
+
+
 def main():
     parser = argparse.ArgumentParser(description="MCTS Connect Four")
 
@@ -389,6 +402,31 @@ def main():
         "path",
         type=str,
         help="Path to save the initialized model",
+    )
+
+    # Train subcommand
+    train_parser = subparsers.add_parser("train", help="Train the model")
+    train_parser.add_argument(
+        "checkpoint_path",
+        type=str,
+        help="Path to existing checkpoint to load (or path to initialized model)",
+    )
+    train_parser.add_argument(
+        "data_pattern",
+        type=str,
+        help="Glob pattern for training data (parquet files)",
+    )
+    train_parser.add_argument(
+        "--save-dir",
+        type=str,
+        default="./checkpoints",
+        help="Directory to save new checkpoints (default: ./checkpoints)",
+    )
+    train_parser.add_argument(
+        "--batch-size",
+        type=int,
+        default=8,
+        help="Training batch size (default: 8)",
     )
 
     # Simulate subcommand
@@ -441,6 +479,8 @@ def main():
         run_simulate(args, parser)
     elif args.command == "initialize":
         run_initialize(args)
+    elif args.command == "train":
+        run_train(args)
     else:
         parser.print_help()
 

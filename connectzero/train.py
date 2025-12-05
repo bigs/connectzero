@@ -41,7 +41,7 @@ def make_step(
     state: eqx.nn.State,
     opt_state: optax.OptState,
     batch: dict,
-    optimizer: optax.Optimizer,
+    optimizer: optax.GradientTransformation,
 ):
     """
     Performs a single optimization step.
@@ -64,6 +64,7 @@ def train_loop(
     checkpoint_path: str,
     data_pattern: str,
     save_dir: str,
+    batch_size: int = 8,
 ):
     """
     Main training loop.
@@ -91,7 +92,7 @@ def train_loop(
 
     epoch_loss = 0.0
 
-    for step, batch in enumerate(dataloader.iter(batch_size=BATCH_SIZE)):
+    for step, batch in enumerate(dataloader.iter(batch_size=batch_size)):
         model, state, opt_state, loss = make_step(
             model, state, opt_state, batch, optimizer
         )
@@ -105,8 +106,3 @@ def train_loop(
     hyperparams = {"num_blocks": len(model.blocks)}
 
     save_model(save_path, hyperparams, model, state, opt_state)
-
-
-if __name__ == "__main__":
-    # Simple entry point
-    train_loop(data_dir="./data", save_dir="./checkpoints")
