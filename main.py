@@ -6,8 +6,6 @@ from collections import deque
 import equinox as eqx
 import jax
 import jax.numpy as jnp
-import pyarrow as pa
-import pyarrow.parquet as pq
 from jax import Array
 
 from connectzero import batched, single
@@ -19,58 +17,9 @@ from connectzero.game import (
     play_move_single,
     print_board_state,
     print_board_states,
+    save_trajectories,
 )
 from connectzero.model import ConnectZeroModel, load, save
-
-
-def save_trajectories(samples: list[TrainingSample], filename: str):
-    """
-    Save a list of TrainingSample named tuples to a Parquet file.
-    """
-    # Convert list of NamedTuples to a dictionary of lists
-    # We use jax.device_get to ensure we have numpy arrays on CPU
-
-    # Verify lengths
-    n = len(samples)
-    if n == 0:
-        return
-
-    flat_data = {
-        "board_state": [],
-        "policy_target": [],
-        "value_target": [],
-    }
-
-    for s in samples:
-        b_state = jax.device_get(s.board_state)
-        p_target = jax.device_get(s.policy_target)
-        v_target = jax.device_get(s.value_target)
-
-        # Check if batched (ndim=4 for board_state [B, 3, 6, 7])
-        if b_state.ndim == 4:
-            # Iterate over batch dimension
-            B = b_state.shape[0]
-            for i in range(B):
-                flat_data["board_state"].append(b_state[i].flatten().tolist())
-                flat_data["policy_target"].append(p_target[i].tolist())
-                flat_data["value_target"].append(v_target[i].item())
-        else:
-            # Single game
-            flat_data["board_state"].append(b_state.flatten().tolist())
-            flat_data["policy_target"].append(p_target.tolist())
-            flat_data["value_target"].append(v_target.item())
-
-    # Create Arrow Table
-    # We need to explicit schema or let it infer.
-    # board_state will be List<int32> or FixedSizeList
-
-    table = pa.Table.from_pydict(flat_data)
-
-    # Write to Parquet
-    # Append? Parquet doesn't support append easily. usually we write new files.
-    # But the requirement was "write them out... at the end".
-    pq.write_table(table, filename)
-    print(f"Saved {len(flat_data['board_state'])} samples to {filename}")
 
 
 def process_single_game_history(

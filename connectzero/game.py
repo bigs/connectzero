@@ -2,6 +2,8 @@ from typing import NamedTuple
 
 import jax
 import jax.numpy as jnp
+import pyarrow as pa
+import pyarrow.parquet as pq
 from jax import Array
 
 
@@ -207,3 +209,90 @@ def to_model_input(board_state: jnp.ndarray, turn_count: jnp.ndarray) -> jnp.nda
 
 
 to_model_input_batched = jax.vmap(to_model_input, in_axes=(0, 0))
+
+
+def save_trajectories(samples: list[TrainingSample], filename: str):
+    """
+    Save a list of TrainingSample named tuples to a Parquet file.
+    """
+    # Convert list of NamedTuples to a dictionary of lists
+    # We use jax.device_get to ensure we have numpy arrays on CPU
+
+    # Verify lengths
+    n = len(samples)
+    if n == 0:
+        return
+
+    flat_data = {
+        "board_state": [],
+        "policy_target": [],
+        "value_target": [],
+    }
+
+    for s in samples:
+        b_state = jax.device_get(s.board_state)
+        p_target = jax.device_get(s.policy_target)
+        v_target = jax.device_get(s.value_target)
+
+        # Check if batched (ndim=4 for board_state [B, 3, 6, 7])
+        if b_state.ndim == 4:
+            # Iterate over batch dimension
+            B = b_state.shape[0]
+            for i in range(B):
+                flat_data["board_state"].append(b_state[i].flatten().tolist())
+                flat_data["policy_target"].append(p_target[i].tolist())
+                flat_data["value_target"].append(v_target[i].item())
+        else:
+            # Single game
+            flat_data["board_state"].append(b_state.flatten().tolist())
+            flat_data["policy_target"].append(p_target.tolist())
+            flat_data["value_target"].append(v_target.item())
+
+    # Create Arrow Table
+    table = pa.Table.from_pydict(flat_data)
+
+    # Write to Parquet
+    pq.write_table(table, filename)
+    print(f"Saved {len(flat_data['board_state'])} samples to {filename}")
+
+
+def load_trajectories(filename: str) -> list[TrainingSample]:
+    """
+    Load a list of TrainingSample named tuples from a Parquet file.
+    """
+    table = pq.read_table(filename)
+    data = table.to_pydict()
+
+    samples = []
+    num_samples = len(data["board_state"])
+
+    for i in range(num_samples):
+        # Reconstruct board_state
+        board_flat = data["board_state"][i]
+        arr = jnp.array(board_flat, dtype=jnp.float32)
+
+        if arr.size == 42:
+            # This would be raw board state (int32), but we loaded as float
+            # This case shouldn't happen if we always save model inputs [3, 6, 7]
+            # But just in case, we handle it.
+            board_state = arr.astype(jnp.int32).reshape(6, 7)
+        elif arr.size == 126:
+            board_state = arr.reshape(3, 6, 7)
+        else:
+            raise ValueError(f"Unexpected board state size: {arr.size}")
+
+        # Reconstruct policy_target
+        policy_target = jnp.array(data["policy_target"][i], dtype=jnp.float32)
+
+        # Reconstruct value_target
+        value_target = jnp.array([data["value_target"][i]], dtype=jnp.float32)
+
+        samples.append(
+            TrainingSample(
+                board_state=board_state,
+                policy_target=policy_target,
+                value_target=value_target,
+            )
+        )
+
+    return samples
