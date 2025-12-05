@@ -161,7 +161,7 @@ def run_simulate(args, parser):
     if args.puct:
         if args.checkpoint:
             print(f"Loading checkpoint from {args.checkpoint}")
-            model, model_state = load(args.checkpoint)
+            model, model_state, _ = load(args.checkpoint)
         else:
             print("Using PUCT with randomly initialized neural network")
             key, model_key = jax.random.split(key)

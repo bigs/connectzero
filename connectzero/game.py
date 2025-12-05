@@ -4,6 +4,7 @@ import jax
 import jax.numpy as jnp
 import pyarrow as pa
 import pyarrow.parquet as pq
+from datasets import Dataset, load_dataset
 from jax import Array
 
 
@@ -296,3 +297,28 @@ def load_trajectories(filename: str) -> list[TrainingSample]:
         )
 
     return samples
+
+
+def reshape_transforms(examples):
+    """
+    Preprocessing function to reshape flattened Parquet data back into
+    spatial tensors for the model.
+    """
+    batch_size = len(examples["board_state"])
+
+    boards = jnp.array(examples["board_state"], dtype=jnp.float32)
+    boards = boards.reshape(batch_size, 3, 6, 7)
+
+    policies = jnp.array(examples["policy_target"], dtype=jnp.float32)
+
+    values = jnp.array(examples["value_target"], dtype=jnp.float32)
+    values = values.reshape(batch_size, 1)
+
+    return {"board_state": boards, "policy_target": policies, "value_target": values}
+
+
+def create_dataloader(file_pattern: str) -> Dataset:
+    ds = load_dataset("parquet", data_files=file_pattern, split="train", shuffle=True)
+    ds = ds.with_transform(reshape_transforms)
+
+    return ds

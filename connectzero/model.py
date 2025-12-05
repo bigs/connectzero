@@ -1,8 +1,10 @@
 import json
+from typing import Optional
 
 import equinox as eqx
 import jax
 import jax.numpy as jnp
+import optax
 
 
 class ConnectZeroResidualBlock(eqx.Module):
@@ -165,20 +167,38 @@ class ConnectZeroModel(eqx.Module):
 
 
 def save(
-    filename: str, hyperparams: dict, model: ConnectZeroModel, state: eqx.nn.State
+    filename: str,
+    hyperparams: dict,
+    model: ConnectZeroModel,
+    state: eqx.nn.State,
+    opt_state: Optional[optax.OptState] = None,
 ):
     with open(filename, "wb") as f:
+        hyperparams["has_opt_state"] = opt_state is not None
         hyperparam_str = json.dumps(hyperparams)
         f.write((hyperparam_str + "\n").encode())
-        eqx.tree_serialise_leaves(f, (model, state))
+        if opt_state is not None:
+            eqx.tree_serialise_leaves(f, (model, state, opt_state))
+        else:
+            eqx.tree_serialise_leaves(f, (model, state))
 
 
-def load(filename: str) -> tuple[ConnectZeroModel, eqx.nn.State]:
+def load(
+    filename: str, opt_state: Optional[optax.OptState] = None
+) -> tuple[ConnectZeroModel, eqx.nn.State, Optional[optax.OptState]]:
     with open(filename, "rb") as f:
         hyperparams = json.loads(f.readline().decode())
+        has_opt_state = hyperparams.get("has_opt_state", False)
 
         model, state = eqx.nn.make_with_state(ConnectZeroModel)(
             key=jax.random.PRNGKey(0), **hyperparams
         )
-        (model, state) = eqx.tree_deserialise_leaves(f, (model, state))
-        return model, state
+
+        if has_opt_state and opt_state is not None:
+            (model, state, opt_state) = eqx.tree_deserialise_leaves(
+                f, (model, state, opt_state)
+            )
+            return model, state, opt_state
+        else:
+            (model, state) = eqx.tree_deserialise_leaves(f, (model, state))
+            return model, state, None
