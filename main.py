@@ -221,9 +221,6 @@ def run_simulate(args, parser):
     key = jax.random.PRNGKey(args.seed)
     num_simulations = args.simulations
 
-    replay_buffer = deque(maxlen=100000)
-    game_history = []
-
     model_tuple = None
     if args.puct:
         if args.checkpoint:
@@ -239,46 +236,169 @@ def run_simulate(args, parser):
     elif args.checkpoint:
         parser.error("--checkpoint requires --puct to be set")
 
-    if args.single:
-        if args.batch > 1:
-            print("Running new engine in batch mode")
-            board_state = jnp.zeros((args.batch, 6, 7), dtype=jnp.int32)
+    for i in range(args.iterations):
+        if args.iterations > 1:
+            print(f"Starting iteration {i + 1}/{args.iterations}")
+
+        replay_buffer = deque(maxlen=100000)
+        game_history = []
+
+        if args.single:
+            if args.batch > 1:
+                print("Running new engine in batch mode")
+                board_state = jnp.zeros((args.batch, 6, 7), dtype=jnp.int32)
+                print("Initial Board State:")
+                print_board_states(board_state)
+
+                turn_count = jnp.count_nonzero(board_state, axis=(1, 2))
+                tree_prototype = single.SearchTree.init(N=num_simulations * 42 + 1, A=7)
+                tree = jax.tree.map(
+                    lambda x: jnp.stack([x] * args.batch), tree_prototype
+                )
+
+                # In --single mode with batching, we need to ensure randomness.
+                # run_search_vmap uses the same key for all items in the batch if we pass a single key.
+                # We need to pass a batch of keys.
+
+                while jnp.any(check_winner(board_state, turn_count) == 0):
+                    key, subkey = jax.random.split(key)
+                    batch_keys = jax.random.split(subkey, args.batch)
+                    # is_player_turn = is_interactive & (jnp.any(turn_count % 2 != 0))
+
+                    tree, best_action, board_state, sample = run_search_vmap(
+                        tree,
+                        board_state,
+                        num_simulations,
+                        jnp.sqrt(2),
+                        batch_keys,
+                        model_tuple,
+                        args.temperature,  # Pass temperature
+                        args.temperature_depth,
+                        1.0,  # dirichlet_alpha
+                        0.25,  # dirichlet_epsilon
+                    )
+
+                    # Collect samples
+                    # sample is a TrainingSample where each field is [B, ...]
+                    # We convert to CPU immediately
+                    game_history.append(jax.device_get(sample))
+
+                    turn_count = jnp.count_nonzero(board_state, axis=(1, 2))
+                    print_board_states(board_state)
+
+                # Game Over
+                print("Game Over")
+                # Process game history to set value targets
+                processed_history = process_batched_game_history(
+                    game_history, board_state, turn_count
+                )
+                # Add to replay buffer
+                for s in processed_history:
+                    replay_buffer.append(s)
+
+                # Save to disk
+                if args.out:
+                    filename = get_unique_filename(args.out)
+                    save_trajectories(list(replay_buffer), filename)
+
+            else:
+                # Single Game Mode
+                print("Running in Single Game Mode")
+                board_state = jnp.zeros((6, 7), dtype=jnp.int32)
+                print("Initial Board State:")
+                print_board_state(board_state)
+
+                turn_count = jnp.count_nonzero(board_state)
+                tree = single.SearchTree.init(N=num_simulations * 42 + 1, A=7)
+
+                while check_winner_single(board_state, turn_count) == 0:
+                    key, subkey = jax.random.split(key)
+                    is_player_turn = args.interactive and (int(turn_count) % 2 != 0)
+
+                    if is_player_turn:
+                        tree, board_state = handle_player_turn_single(
+                            tree, board_state, turn_count
+                        )
+                        turn_count = jnp.count_nonzero(board_state)
+                    else:
+                        tree, best_action, board_state, sample = single.run_mcts_search(
+                            tree,
+                            board_state,
+                            num_simulations,
+                            jnp.sqrt(2),
+                            subkey,
+                            model_tuple,
+                            args.temperature,  # Pass temperature
+                            args.temperature_depth,
+                            1.0,  # dirichlet_alpha
+                            0.25,  # dirichlet_epsilon
+                        )
+                        game_history.append(jax.device_get(sample))
+
+                        turn_count = jnp.count_nonzero(board_state)
+                        print_board_state(board_state)
+                        print("Best Action:", best_action)
+
+                # Game Over
+                print("Game Over")
+                processed_history = process_single_game_history(
+                    game_history, board_state, turn_count
+                )
+                for s in processed_history:
+                    replay_buffer.append(s)
+
+                if args.out:
+                    filename = get_unique_filename(args.out)
+                    save_trajectories(list(replay_buffer), filename)
+
+        else:
+            # Batch Mode
+            if args.interactive and args.batch > 1:
+                print(
+                    "Interactive mode only supports batch size 1. Setting batch size to 1."
+                )
+                args.batch = 1
+
+            print(f"Running in Batch Mode (B={args.batch})")
+            starting_board_state = jnp.zeros((args.batch, 6, 7), dtype=jnp.int32)
             print("Initial Board State:")
-            print_board_states(board_state)
+            print_board_states(starting_board_state)
+
+            batch_size = starting_board_state.shape[0]
+            board_state = starting_board_state
 
             turn_count = jnp.count_nonzero(board_state, axis=(1, 2))
-            tree_prototype = single.SearchTree.init(N=num_simulations * 42 + 1, A=7)
-            tree = jax.tree.map(lambda x: jnp.stack([x] * args.batch), tree_prototype)
-
-            # In --single mode with batching, we need to ensure randomness.
-            # run_search_vmap uses the same key for all items in the batch if we pass a single key.
-            # We need to pass a batch of keys.
+            tree = batched.BatchedSearchTree.init(
+                B=batch_size, N=num_simulations * 42 + 1, A=7
+            )
 
             while jnp.any(check_winner(board_state, turn_count) == 0):
                 key, subkey = jax.random.split(key)
-                batch_keys = jax.random.split(subkey, args.batch)
-                # is_player_turn = is_interactive & (jnp.any(turn_count % 2 != 0))
+                is_player_turn = args.interactive and (int(turn_count[0]) % 2 != 0)
 
-                tree, best_action, board_state, sample = run_search_vmap(
-                    tree,
-                    board_state,
-                    num_simulations,
-                    jnp.sqrt(2),
-                    batch_keys,
-                    model_tuple,
-                    args.temperature,  # Pass temperature
-                    args.temperature_depth,
-                    1.0,  # dirichlet_alpha
-                    0.25,  # dirichlet_epsilon
-                )
+                if is_player_turn:
+                    tree, board_state = handle_player_turn(
+                        tree, board_state, turn_count
+                    )
+                    turn_count = jnp.count_nonzero(board_state, axis=(1, 2))
+                else:
+                    tree, best_action, board_state, sample = batched.run_mcts_search(
+                        tree,
+                        board_state,
+                        num_simulations,
+                        jnp.sqrt(2),
+                        subkey,
+                        model_tuple,
+                        args.temperature,
+                        args.temperature_depth,
+                        1.0,
+                        0.25,
+                    )
+                    game_history.append(jax.device_get(sample))
 
-                # Collect samples
-                # sample is a TrainingSample where each field is [B, ...]
-                # We convert to CPU immediately
-                game_history.append(jax.device_get(sample))
-
-                turn_count = jnp.count_nonzero(board_state, axis=(1, 2))
-                print_board_states(board_state)
+                    turn_count = jnp.count_nonzero(board_state, axis=(1, 2))
+                    print_board_states(board_state)
+                    print("Best Action:", best_action)
 
             # Game Over
             print("Game Over")
@@ -286,124 +406,12 @@ def run_simulate(args, parser):
             processed_history = process_batched_game_history(
                 game_history, board_state, turn_count
             )
-            # Add to replay buffer
-            for s in processed_history:
-                replay_buffer.append(s)
-
-            # Save to disk
-            if args.out:
-                filename = get_unique_filename(args.out)
-                save_trajectories(list(replay_buffer), filename)
-
-        else:
-            # Single Game Mode
-            print("Running in Single Game Mode")
-            board_state = jnp.zeros((6, 7), dtype=jnp.int32)
-            print("Initial Board State:")
-            print_board_state(board_state)
-
-            turn_count = jnp.count_nonzero(board_state)
-            tree = single.SearchTree.init(N=num_simulations * 42 + 1, A=7)
-
-            while check_winner_single(board_state, turn_count) == 0:
-                key, subkey = jax.random.split(key)
-                is_player_turn = args.interactive and (int(turn_count) % 2 != 0)
-
-                if is_player_turn:
-                    tree, board_state = handle_player_turn_single(
-                        tree, board_state, turn_count
-                    )
-                    turn_count = jnp.count_nonzero(board_state)
-                else:
-                    tree, best_action, board_state, sample = single.run_mcts_search(
-                        tree,
-                        board_state,
-                        num_simulations,
-                        jnp.sqrt(2),
-                        subkey,
-                        model_tuple,
-                        args.temperature,  # Pass temperature
-                        args.temperature_depth,
-                        1.0,  # dirichlet_alpha
-                        0.25,  # dirichlet_epsilon
-                    )
-                    game_history.append(jax.device_get(sample))
-
-                    turn_count = jnp.count_nonzero(board_state)
-                    print_board_state(board_state)
-                    print("Best Action:", best_action)
-
-            # Game Over
-            print("Game Over")
-            processed_history = process_single_game_history(
-                game_history, board_state, turn_count
-            )
             for s in processed_history:
                 replay_buffer.append(s)
 
             if args.out:
                 filename = get_unique_filename(args.out)
                 save_trajectories(list(replay_buffer), filename)
-
-    else:
-        # Batch Mode
-        if args.interactive and args.batch > 1:
-            print(
-                "Interactive mode only supports batch size 1. Setting batch size to 1."
-            )
-            args.batch = 1
-
-        print(f"Running in Batch Mode (B={args.batch})")
-        starting_board_state = jnp.zeros((args.batch, 6, 7), dtype=jnp.int32)
-        print("Initial Board State:")
-        print_board_states(starting_board_state)
-
-        batch_size = starting_board_state.shape[0]
-        board_state = starting_board_state
-
-        turn_count = jnp.count_nonzero(board_state, axis=(1, 2))
-        tree = batched.BatchedSearchTree.init(
-            B=batch_size, N=num_simulations * 42 + 1, A=7
-        )
-
-        while jnp.any(check_winner(board_state, turn_count) == 0):
-            key, subkey = jax.random.split(key)
-            is_player_turn = args.interactive and (int(turn_count[0]) % 2 != 0)
-
-            if is_player_turn:
-                tree, board_state = handle_player_turn(tree, board_state, turn_count)
-                turn_count = jnp.count_nonzero(board_state, axis=(1, 2))
-            else:
-                tree, best_action, board_state, sample = batched.run_mcts_search(
-                    tree,
-                    board_state,
-                    num_simulations,
-                    jnp.sqrt(2),
-                    subkey,
-                    model_tuple,
-                    args.temperature,
-                    args.temperature_depth,
-                    1.0,
-                    0.25,
-                )
-                game_history.append(jax.device_get(sample))
-
-                turn_count = jnp.count_nonzero(board_state, axis=(1, 2))
-                print_board_states(board_state)
-                print("Best Action:", best_action)
-
-        # Game Over
-        print("Game Over")
-        # Process game history to set value targets
-        processed_history = process_batched_game_history(
-            game_history, board_state, turn_count
-        )
-        for s in processed_history:
-            replay_buffer.append(s)
-
-        if args.out:
-            filename = get_unique_filename(args.out)
-            save_trajectories(list(replay_buffer), filename)
 
 
 def run_initialize(args):
@@ -545,6 +553,13 @@ def main():
         type=int,
         default=15,
         help="Number of moves to apply temperature sampling before switching to greedy (default: 15)",
+    )
+    simulate_parser.add_argument(
+        "-n",
+        "--iterations",
+        type=int,
+        default=1,
+        help="Number of times to run the full self-play loop (default: 1)",
     )
 
     args = parser.parse_args()
