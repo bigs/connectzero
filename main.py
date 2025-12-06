@@ -66,6 +66,72 @@ def process_single_game_history(
     return processed
 
 
+def process_batched_game_history(
+    history: list[TrainingSample],
+    final_board_state: jnp.ndarray,
+    final_turn_count: jnp.ndarray,
+) -> list[TrainingSample]:
+    """
+    Process batched game history to set value targets based on game outcomes.
+
+    Uses negamax-style backwards propagation: the value target for each
+    sample is set based on whether the player whose turn it was at that
+    state eventually won, lost, or drew. Processes each game in the batch
+    independently.
+
+    Args:
+        history: List of TrainingSample with zeroed value_target.
+                Each sample has batched dimensions: board_state [B, 3, 6, 7],
+                policy_target [B, 7], value_target [B].
+        final_board_state: [B, 6, 7] array, the final board states.
+        final_turn_count: [B] array, the turn counts at game end.
+
+    Returns:
+        List of TrainingSample with value_target set.
+    """
+    batch_size = final_board_state.shape[0]
+    winners = check_winner(final_board_state, final_turn_count)
+    winners = jax.device_get(winners)  # Convert to numpy for indexing
+
+    # Process each game in the batch
+    processed_samples = []
+    for i, sample in enumerate(history):
+        # Extract batched components
+        batched_board_state = jax.device_get(sample.board_state)  # [B, 3, 6, 7]
+        batched_policy_target = jax.device_get(sample.policy_target)  # [B, 7]
+        batched_value_target = []
+
+        # Process each game in the batch
+        # Sample i corresponds to turn_count = i (before move i+1)
+        # For games that ended early, we still assign value targets based on final outcome
+        for b in range(batch_size):
+            # The sample at index i corresponds to turn_count = i
+            # But if the game ended earlier, we use the final turn_count
+            # to determine if this sample is valid (though we still assign value)
+            turn_count_at_step = i
+            current_player = (turn_count_at_step % 2) + 1
+            winner = int(winners[b])
+
+            if winner == 3:  # Draw
+                value = 0.0
+            elif winner == current_player:  # Current player won
+                value = 1.0
+            else:  # Current player lost
+                value = -1.0
+
+            batched_value_target.append(value)
+
+        # Reconstruct the batched sample
+        updated_sample = TrainingSample(
+            board_state=jnp.array(batched_board_state, dtype=jnp.float32),
+            policy_target=jnp.array(batched_policy_target, dtype=jnp.float32),
+            value_target=jnp.array(batched_value_target, dtype=jnp.float32),
+        )
+        processed_samples.append(updated_sample)
+
+    return processed_samples
+
+
 run_search_vmap = jax.vmap(
     single.run_mcts_search, in_axes=(0, 0, None, None, 0, None, None, None, None, None)
 )
@@ -216,8 +282,12 @@ def run_simulate(args, parser):
 
             # Game Over
             print("Game Over")
+            # Process game history to set value targets
+            processed_history = process_batched_game_history(
+                game_history, board_state, turn_count
+            )
             # Add to replay buffer
-            for s in game_history:
+            for s in processed_history:
                 replay_buffer.append(s)
 
             # Save to disk
@@ -324,7 +394,11 @@ def run_simulate(args, parser):
 
         # Game Over
         print("Game Over")
-        for s in game_history:
+        # Process game history to set value targets
+        processed_history = process_batched_game_history(
+            game_history, board_state, turn_count
+        )
+        for s in processed_history:
             replay_buffer.append(s)
 
         if args.out:

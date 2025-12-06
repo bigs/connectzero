@@ -755,7 +755,7 @@ def extract_training_data(
     total_visits = jnp.sum(root_visits)
     safe_total_visits = jnp.maximum(total_visits, 1)
     policy_target = root_visits / safe_total_visits
-    # Will be updated with the game result in the training loop
+    # Will be updated with the game result after the game completes
     value_target = jnp.zeros(1, dtype=jnp.float32)
     model_input = to_model_input(board_state, turn_count)
     return TrainingSample(model_input, policy_target, value_target)
