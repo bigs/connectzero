@@ -22,11 +22,15 @@ class ConnectZeroResidualBlock(eqx.Module):
         self.conv1 = eqx.nn.Conv2d(
             64, 64, kernel_size=(3, 3), stride=1, padding=1, key=key1, use_bias=False
         )
-        self.batch_norm1 = eqx.nn.BatchNorm(input_size=64, axis_name="batch")
+        self.batch_norm1 = eqx.nn.BatchNorm(
+            input_size=64, axis_name="batch", mode="batch"
+        )
         self.conv2 = eqx.nn.Conv2d(
             64, 64, kernel_size=(3, 3), stride=1, padding=1, key=key2, use_bias=False
         )
-        self.batch_norm2 = eqx.nn.BatchNorm(input_size=64, axis_name="batch")
+        self.batch_norm2 = eqx.nn.BatchNorm(
+            input_size=64, axis_name="batch", mode="batch"
+        )
 
     def __call__(
         self, x: jnp.ndarray, state: eqx.nn.State
@@ -53,7 +57,9 @@ class ConnectZeroStem(eqx.Module):
         self.conv1 = eqx.nn.Conv2d(
             3, 64, kernel_size=3, stride=1, padding=1, key=key, use_bias=False
         )
-        self.batch_norm1 = eqx.nn.BatchNorm(input_size=64, axis_name="batch")
+        self.batch_norm1 = eqx.nn.BatchNorm(
+            input_size=64, axis_name="batch", mode="batch"
+        )
 
     def __call__(
         self, x: jnp.ndarray, state: eqx.nn.State
@@ -77,7 +83,9 @@ class ConnectZeroPolicyHead(eqx.Module):
         self.conv = eqx.nn.Conv2d(
             64, 2, kernel_size=1, stride=1, padding=0, key=convkey, use_bias=False
         )
-        self.batch_norm = eqx.nn.BatchNorm(input_size=2, axis_name="batch")
+        self.batch_norm = eqx.nn.BatchNorm(
+            input_size=2, axis_name="batch", mode="batch"
+        )
         self.linear = eqx.nn.Linear(84, 7, key=linearkey)
 
     def __call__(
@@ -106,7 +114,9 @@ class ConnectZeroValueHead(eqx.Module):
         self.conv = eqx.nn.Conv2d(
             64, 1, kernel_size=1, stride=1, padding=0, key=convkey, use_bias=False
         )
-        self.batch_norm = eqx.nn.BatchNorm(input_size=1, axis_name="batch")
+        self.batch_norm = eqx.nn.BatchNorm(
+            input_size=1, axis_name="batch", mode="batch"
+        )
         self.linear1 = eqx.nn.Linear(42, 64, key=linear1key)
         self.linear2 = eqx.nn.Linear(64, 1, key=linear2key)
 
