@@ -90,7 +90,7 @@ def train_loop(
         model, state, opt_state, loss = make_step(
             model, state, opt_state, batch, optimizer
         )
-        epoch_loss += loss.item()
+        epoch_loss += loss
         steps += 1
 
         if steps % 10 == 0:
