@@ -290,6 +290,7 @@ dependencies = [
     { name = "orbax-checkpoint" },
     { name = "pyarrow" },
     { name = "torch" },
+    { name = "tqdm" },
 ]
 
 [package.dev-dependencies]
@@ -312,6 +313,7 @@ requires-dist = [
     { name = "orbax-checkpoint", specifier = ">=0.11.30" },
     { name = "pyarrow", specifier = ">=22.0.0" },
     { name = "torch", specifier = ">=2.9.1" },
+    { name = "tqdm", specifier = ">=4.66.0" },
 ]
 
 [package.metadata.requires-dev]
