@@ -6,6 +6,7 @@ import pyarrow as pa
 import pyarrow.parquet as pq
 from datasets import Dataset, load_dataset
 from jax import Array
+from tqdm import tqdm
 
 
 class TrainingSample(NamedTuple):
@@ -254,7 +255,7 @@ def save_trajectories(samples: list[TrainingSample], filename: str):
 
     # Write to Parquet
     pq.write_table(table, filename)
-    print(f"Saved {len(flat_data['board_state'])} samples to {filename}")
+    tqdm.write(f"Saved {len(flat_data['board_state'])} samples to {filename}")
 
 
 def load_trajectories(filename: str) -> list[TrainingSample]:
