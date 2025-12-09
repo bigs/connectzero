@@ -1,5 +1,7 @@
 import argparse
+import glob
 import os
+import re
 import time
 from collections import deque
 
@@ -7,12 +9,14 @@ import equinox as eqx
 import jax
 import jax.numpy as jnp
 from jax import Array
+from tqdm import tqdm
 
 from connectzero import batched, single
 from connectzero.game import (
     TrainingSample,
     check_winner,
     check_winner_single,
+    get_parquet_row_count,
     play_move,
     play_move_single,
     print_board_state,
@@ -20,7 +24,7 @@ from connectzero.game import (
     save_trajectories,
 )
 from connectzero.model import ConnectZeroModel, load, save
-from connectzero.train import train_loop
+from connectzero.train import get_optimizer, train_epoch, train_loop
 
 
 def process_single_game_history(
@@ -76,8 +80,8 @@ def process_batched_game_history(
 
     Uses negamax-style backwards propagation: the value target for each
     sample is set based on whether the player whose turn it was at that
-    state eventually won, lost, or drew. Processes each game in the batch
-    independently.
+    state eventually won, lost, or drew. Filters out samples from games
+    that had already finished (when batched games end at different times).
 
     Args:
         history: List of TrainingSample with zeroed value_target.
@@ -87,49 +91,64 @@ def process_batched_game_history(
         final_turn_count: [B] array, the turn counts at game end.
 
     Returns:
-        List of TrainingSample with value_target set.
+        List containing a single TrainingSample with all valid samples
+        batched together (shape [num_valid, ...]).
     """
-    batch_size = final_board_state.shape[0]
-    winners = check_winner(final_board_state, final_turn_count)
-    winners = jax.device_get(winners)  # Convert to numpy for indexing
+    if not history:
+        return []
 
-    # Process each game in the batch
-    processed_samples = []
-    for i, sample in enumerate(history):
-        # Extract batched components
-        batched_board_state = jax.device_get(sample.board_state)  # [B, 3, 6, 7]
-        batched_policy_target = jax.device_get(sample.policy_target)  # [B, 7]
-        batched_value_target = []
+    T = len(history)  # Number of time steps
+    B = final_board_state.shape[0]  # Batch size
 
-        # Process each game in the batch
-        # Sample i corresponds to turn_count = i (before move i+1)
-        # For games that ended early, we still assign value targets based on final outcome
-        for b in range(batch_size):
-            # The sample at index i corresponds to turn_count = i
-            # But if the game ended earlier, we use the final turn_count
-            # to determine if this sample is valid (though we still assign value)
-            turn_count_at_step = i
-            current_player = (turn_count_at_step % 2) + 1
-            winner = int(winners[b])
+    # Compute winners for all games
+    winners = check_winner(final_board_state, final_turn_count)  # [B]
 
-            if winner == 3:  # Draw
-                value = 0.0
-            elif winner == current_player:  # Current player won
-                value = 1.0
-            else:  # Current player lost
-                value = -1.0
+    # Stack history into tensors [T, B, ...]
+    all_board_states = jnp.stack([s.board_state for s in history])  # [T, B, 3, 6, 7]
+    all_policy_targets = jnp.stack([s.policy_target for s in history])  # [T, B, 7]
 
-            batched_value_target.append(value)
+    # Create validity mask: sample at step t is valid only if t < final_turn_count[b]
+    # This filters out samples collected after a game has already ended
+    step_indices = jnp.arange(T)[:, None]  # [T, 1]
+    valid_mask = step_indices < final_turn_count[None, :]  # [T, B]
 
-        # Reconstruct the batched sample
-        updated_sample = TrainingSample(
-            board_state=jnp.array(batched_board_state, dtype=jnp.float32),
-            policy_target=jnp.array(batched_policy_target, dtype=jnp.float32),
-            value_target=jnp.array(batched_value_target, dtype=jnp.float32),
+    # Compute value targets vectorized
+    # current_player at step t is (t % 2) + 1
+    current_player = (step_indices % 2) + 1  # [T, 1]
+
+    # Value is +1 if current player won, -1 if lost, 0 if draw
+    # winners[b] == 3 means draw, winners[b] == current_player means win
+    value_targets = jnp.where(
+        winners[None, :] == 3,
+        0.0,
+        jnp.where(winners[None, :] == current_player, 1.0, -1.0),
+    )  # [T, B]
+
+    # Flatten [T, B, ...] -> [T*B, ...]
+    flat_boards = all_board_states.reshape(T * B, 3, 6, 7)
+    flat_policies = all_policy_targets.reshape(T * B, 7)
+    flat_values = value_targets.reshape(T * B)
+    flat_mask = valid_mask.reshape(T * B)
+
+    # Move to CPU for filtering
+    flat_boards = jax.device_get(flat_boards)
+    flat_policies = jax.device_get(flat_policies)
+    flat_values = jax.device_get(flat_values)
+    flat_mask = jax.device_get(flat_mask)
+
+    # Filter using boolean indexing (on CPU/numpy)
+    valid_boards = flat_boards[flat_mask]  # [num_valid, 3, 6, 7]
+    valid_policies = flat_policies[flat_mask]  # [num_valid, 7]
+    valid_values = flat_values[flat_mask]  # [num_valid]
+
+    # Return as a single batched TrainingSample
+    return [
+        TrainingSample(
+            board_state=jnp.array(valid_boards, dtype=jnp.float32),
+            policy_target=jnp.array(valid_policies, dtype=jnp.float32),
+            value_target=jnp.array(valid_values, dtype=jnp.float32),
         )
-        processed_samples.append(updated_sample)
-
-    return processed_samples
+    ]
 
 
 run_search_vmap = jax.vmap(
@@ -217,6 +236,106 @@ def get_unique_filename(directory: str) -> str:
     return full_path
 
 
+def find_latest_checkpoint(directory: str) -> str | None:
+    """
+    Find the checkpoint with the highest step count in the given directory.
+
+    Looks for files matching the pattern checkpoint_{steps}_steps.eqx and
+    returns the path to the one with the highest step count.
+
+    Args:
+        directory: Path to the checkpoint directory.
+
+    Returns:
+        Full path to the latest checkpoint, or None if no checkpoints found.
+    """
+    if not os.path.exists(directory):
+        return None
+
+    pattern = os.path.join(directory, "checkpoint_*_steps.eqx")
+    checkpoint_files = glob.glob(pattern)
+
+    if not checkpoint_files:
+        return None
+
+    # Parse step counts and find the maximum
+    best_checkpoint = None
+    best_steps = -1
+
+    for filepath in checkpoint_files:
+        filename = os.path.basename(filepath)
+        match = re.match(r"checkpoint_(\d+)_steps\.eqx", filename)
+        if match:
+            steps = int(match.group(1))
+            if steps > best_steps:
+                best_steps = steps
+                best_checkpoint = filepath
+
+    return best_checkpoint
+
+
+def get_next_data_subdir(data_dir: str) -> str:
+    """
+    Create and return the next sequential data subdirectory.
+
+    Looks for existing directories matching the pattern setXXX and creates
+    the next one in sequence (e.g., if set002 exists, creates set003).
+
+    Args:
+        data_dir: Base directory for training data.
+
+    Returns:
+        Full path to the newly created subdirectory.
+    """
+    os.makedirs(data_dir, exist_ok=True)
+
+    # Find existing setXXX directories
+    existing_sets = []
+    for entry in os.listdir(data_dir):
+        full_path = os.path.join(data_dir, entry)
+        if os.path.isdir(full_path):
+            match = re.match(r"set(\d+)", entry)
+            if match:
+                existing_sets.append(int(match.group(1)))
+
+    # Determine next set number
+    next_num = max(existing_sets) + 1 if existing_sets else 0
+
+    # Create the new directory
+    new_dir = os.path.join(data_dir, f"set{next_num:03d}")
+    os.makedirs(new_dir, exist_ok=True)
+
+    return new_dir
+
+
+def select_training_files(data_dir: str, target_buffer_length: int) -> list[str]:
+    """
+    Select the newest parquet files until the target row count is met.
+    """
+    parquet_files = []
+    for root, _, files in os.walk(data_dir):
+        for filename in files:
+            if filename.endswith(".parquet"):
+                parquet_files.append(os.path.join(root, filename))
+
+    # Sort newest-first by lexical order (trajectory_{timestamp}.parquet)
+    parquet_files.sort(reverse=True)
+
+    selected_files: list[str] = []
+    total_rows = 0
+
+    for path in parquet_files:
+        row_count = get_parquet_row_count(path)
+        if row_count <= 0:
+            continue
+        selected_files.append(path)
+        total_rows += row_count
+        if total_rows >= target_buffer_length:
+            break
+
+    return selected_files
+
+
 def run_simulate(args, parser):
     key = jax.random.PRNGKey(args.seed)
     num_simulations = args.simulations
@@ -225,7 +344,7 @@ def run_simulate(args, parser):
     if args.puct:
         if args.checkpoint:
             print(f"Loading checkpoint from {args.checkpoint}")
-            model, model_state, _ = load(args.checkpoint)
+            model, model_state, _, _ = load(args.checkpoint)
         else:
             print("Using PUCT with randomly initialized neural network")
             key, model_key = jax.random.split(key)
@@ -274,7 +393,7 @@ def run_simulate(args, parser):
                         model_tuple,
                         args.temperature,  # Pass temperature
                         args.temperature_depth,
-                        1.0,  # dirichlet_alpha
+                        0.3,  # dirichlet_alpha
                         0.25,  # dirichlet_epsilon
                     )
 
@@ -292,14 +411,11 @@ def run_simulate(args, parser):
                 processed_history = process_batched_game_history(
                     game_history, board_state, turn_count
                 )
-                # Add to replay buffer
-                for s in processed_history:
-                    replay_buffer.append(s)
 
                 # Save to disk
                 if args.out:
                     filename = get_unique_filename(args.out)
-                    save_trajectories(list(replay_buffer), filename)
+                    save_trajectories(processed_history, filename)
 
             else:
                 # Single Game Mode
@@ -330,7 +446,7 @@ def run_simulate(args, parser):
                             model_tuple,
                             args.temperature,  # Pass temperature
                             args.temperature_depth,
-                            1.0,  # dirichlet_alpha
+                            0.3,  # dirichlet_alpha
                             0.25,  # dirichlet_epsilon
                         )
                         game_history.append(jax.device_get(sample))
@@ -406,12 +522,10 @@ def run_simulate(args, parser):
             processed_history = process_batched_game_history(
                 game_history, board_state, turn_count
             )
-            for s in processed_history:
-                replay_buffer.append(s)
 
             if args.out:
                 filename = get_unique_filename(args.out)
-                save_trajectories(list(replay_buffer), filename)
+                save_trajectories(processed_history, filename)
 
 
 def run_initialize(args):
@@ -433,7 +547,7 @@ def run_initialize(args):
     hyperparams = {
         "num_blocks": num_blocks,
     }
-    save(args.path, hyperparams, model, state)
+    save(args.path, hyperparams, 0, model, state)
     print(f"Model saved to {args.path}")
 
 
@@ -447,6 +561,146 @@ def run_train(args):
         save_dir=args.save_dir,
         batch_size=args.batch_size,
     )
+
+
+def run_loop(args):
+    """
+    Run the combined self-play and training loop with a persistent model +
+    optimizer state and a sliding window training buffer.
+    """
+    key = jax.random.PRNGKey(args.seed)
+    num_simulations = args.simulations
+    batch_size = args.batch
+
+    os.makedirs(args.checkpoint_dir, exist_ok=True)
+    os.makedirs(args.data_dir, exist_ok=True)
+
+    optimizer = get_optimizer()
+
+    checkpoint_path = find_latest_checkpoint(args.checkpoint_dir)
+    if checkpoint_path:
+        print(f"Loading checkpoint: {checkpoint_path}")
+        model, state, opt_state, steps = load(checkpoint_path, optimizer=optimizer)
+    else:
+        print("No checkpoint found; initializing new model.")
+        key, model_key = jax.random.split(key)
+        model, state = eqx.nn.make_with_state(ConnectZeroModel)(model_key)
+        opt_state = optimizer.init(eqx.filter(model, eqx.is_array))
+        steps = 0
+
+    if opt_state is None:
+        opt_state = optimizer.init(eqx.filter(model, eqx.is_array))
+
+    checkpoint_interval = 0
+    while True:
+        checkpoint_interval += 1
+        print(f"\n{'=' * 60}")
+        print(f"Starting checkpoint interval {checkpoint_interval}")
+        print(f"{'=' * 60}")
+
+        # Create a new data subdirectory for this interval
+        data_subdir = get_next_data_subdir(args.data_dir)
+        print(f"Saving trajectories to: {data_subdir}")
+
+        # Track files written during this interval
+        trajectory_files = []
+        games_played = 0
+
+        # Self-play loop until we reach games_per_checkpoint
+        pbar = tqdm(
+            total=args.games_per_checkpoint,
+            desc="Self-play",
+            unit="games",
+        )
+
+        inference_model = eqx.tree_inference(model, value=True)
+        model_tuple = (inference_model, state)
+
+        while games_played < args.games_per_checkpoint:
+            key, subkey = jax.random.split(key)
+
+            # Initialize game state for this batch
+            board_state = jnp.zeros((batch_size, 6, 7), dtype=jnp.int32)
+            turn_count = jnp.count_nonzero(board_state, axis=(1, 2))
+            tree = batched.BatchedSearchTree.init(
+                B=batch_size, N=num_simulations * 42 + 1, A=7
+            )
+            game_history = []
+            move_count = 0
+            max_moves = 42  # 6x7 board
+
+            # Play until all games in the batch are done
+            while jnp.any(check_winner(board_state, turn_count) == 0):
+                key, subkey = jax.random.split(key)
+                tree, best_action, board_state, sample = batched.run_mcts_search(
+                    tree,
+                    board_state,
+                    num_simulations,
+                    jnp.sqrt(2),
+                    subkey,
+                    model_tuple,
+                    args.temperature,
+                    args.temperature_depth,
+                    0.3,  # dirichlet_alpha
+                    0.25,  # dirichlet_epsilon
+                )
+                game_history.append(jax.device_get(sample))
+                turn_count = jnp.count_nonzero(board_state, axis=(1, 2))
+                move_count += 1
+                pbar.set_postfix_str(
+                    f"batch {len(trajectory_files) + 1} | moves {move_count}/{max_moves}"
+                )
+
+            # Process game history to set value targets
+            processed_history = process_batched_game_history(
+                game_history, board_state, turn_count
+            )
+
+            # Save trajectories to disk
+            filename = get_unique_filename(data_subdir)
+            save_trajectories(processed_history, filename)
+            trajectory_files.append(filename)
+
+            games_played += batch_size
+            pbar.update(batch_size)
+
+        pbar.close()
+
+        # Training phase with sliding window selection
+        training_files = select_training_files(
+            args.data_dir, args.training_buffer_length
+        )
+        if not training_files:
+            print("No training data available; skipping training step.")
+            continue
+
+        print(
+            f"\n--- Training on {len(training_files)} files "
+            f"(target rows >= {args.training_buffer_length}) ---"
+        )
+
+        train_model = eqx.tree_inference(model, value=False)
+        train_model, state, opt_state, loss, steps = train_epoch(
+            model=train_model,
+            state=state,
+            opt_state=opt_state,
+            data_files=training_files,
+            batch_size=args.batch_size,
+            optimizer=optimizer,
+            initial_step_count=steps,
+        )
+
+        model = train_model
+
+        save_path = os.path.join(args.checkpoint_dir, f"checkpoint_{steps}_steps.eqx")
+        hyperparams = {"num_blocks": len(model.blocks)}
+        save(save_path, hyperparams, steps, model, state, opt_state)
+        checkpoint_path = save_path
+
+        print(
+            f"Checkpoint interval {checkpoint_interval} complete. "
+            f"avg_loss={loss:.4f}, saved {save_path}"
+        )
 
 
 def main():
@@ -562,6 +816,60 @@ def main():
         help="Number of times to run the full self-play loop (default: 1)",
     )
 
+    # Loop subcommand - combined self-play and training
+    loop_parser = subparsers.add_parser(
+        "loop", help="Run combined self-play and training loop"
+    )
+    loop_parser.add_argument(
+        "-g",
+        "--games-per-checkpoint",
+        type=int,
+        default=100,
+        help="Number of games to play before training (default: 100)",
+    )
+    loop_parser.add_argument(
+        "--checkpoint-dir",
+        type=str,
+        default="./checkpoints",
+        help="Directory for loading/saving checkpoints (default: ./checkpoints)",
+    )
+    loop_parser.add_argument(
+        "--data-dir",
+        type=str,
+        default="./data",
+        help="Directory for trajectory data (default: ./data)",
+    )
+    loop_parser.add_argument(
+        "--simulations",
+        type=int,
+        default=800,
+        help="Number of MCTS simulations per move (default: 800)",
+    )
+    loop_parser.add_argument(
+        "--temperature",
+        type=float,
+        default=1.0,
+        help="Sampling temperature for early moves (default: 1.0)",
+    )
+    loop_parser.add_argument(
+        "--temperature-depth",
+        type=int,
+        default=15,
+        help="Number of moves to apply temperature sampling before switching to greedy (default: 15)",
+    )
+    loop_parser.add_argument(
+        "--batch-size",
+        type=int,
+        default=8,
+        help="Training batch size (default: 8)",
+    )
+    loop_parser.add_argument(
+        "--training-buffer-length",
+        type=int,
+        default=5000,
+        help="Target number of samples to keep in the sliding training buffer (default: 5000)",
+    )
+
     args = parser.parse_args()
 
     if args.command == "simulate":
@@ -570,6 +878,8 @@ def main():
         run_initialize(args)
     elif args.command == "train":
         run_train(args)
+    elif args.command == "loop":
+        run_loop(args)
     else:
         parser.print_help()
 

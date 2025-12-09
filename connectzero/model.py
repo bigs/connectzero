@@ -179,12 +179,14 @@ class ConnectZeroModel(eqx.Module):
 def save(
     filename: str,
     hyperparams: dict,
+    step: int,
     model: ConnectZeroModel,
     state: eqx.nn.State,
     opt_state: Optional[optax.OptState] = None,
 ):
     with open(filename, "wb") as f:
         hyperparams["has_opt_state"] = opt_state is not None
+        hyperparams["step"] = step
         hyperparam_str = json.dumps(hyperparams)
         f.write((hyperparam_str + "\n").encode())
         # Serialize model/state first, then opt_state separately.
@@ -198,10 +200,11 @@ def load(
     filename: str,
     opt_state: Optional[optax.OptState] = None,
     optimizer: Optional[optax.GradientTransformation] = None,
-) -> tuple[ConnectZeroModel, eqx.nn.State, Optional[optax.OptState]]:
+) -> tuple[ConnectZeroModel, eqx.nn.State, Optional[optax.OptState], int]:
     with open(filename, "rb") as f:
         hyperparams = json.loads(f.readline().decode())
         has_opt_state = hyperparams.get("has_opt_state", False)
+        step = hyperparams.get("step", 0)
 
         model, state = eqx.nn.make_with_state(ConnectZeroModel)(
             key=jax.random.PRNGKey(0), **hyperparams
@@ -217,7 +220,7 @@ def load(
 
             if opt_state is not None:
                 opt_state = eqx.tree_deserialise_leaves(f, opt_state)
-                return model, state, opt_state
+                return model, state, opt_state, step
             # If has_opt_state but no optimizer provided, skip opt_state (inference mode)
 
-        return model, state, None
+        return model, state, None, step

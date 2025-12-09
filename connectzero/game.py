@@ -317,8 +317,16 @@ def reshape_transforms(examples):
     return {"board_state": boards, "policy_target": policies, "value_target": values}
 
 
-def create_dataloader(file_pattern: str) -> Dataset:
-    ds = load_dataset("parquet", data_files=file_pattern, split="train")
+def get_parquet_row_count(filename: str) -> int:
+    """
+    Fast metadata-only row count for a Parquet file.
+
+    """
+    return int(pq.read_metadata(filename).num_rows)
+
+
+def create_dataloader(data_files: list[str]) -> Dataset:
+    ds = load_dataset("parquet", data_files=data_files, split="train")
     ds = ds.shuffle()
     ds = ds.with_transform(reshape_transforms)
 
