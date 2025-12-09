@@ -545,7 +545,7 @@ def run_mcts_search(
     model: tuple[ConnectZeroModel, eqx.nn.State] | None,
     temperature: float = 1.0,
     temperature_depth: int = 15,
-    dirichlet_alpha: float = 1.0,
+    dirichlet_alpha: float = 0.3,
     dirichlet_epsilon: float = 0.25,
 ) -> tuple[SearchTree, jnp.ndarray, jnp.ndarray, TrainingSample]:
     """
