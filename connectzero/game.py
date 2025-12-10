@@ -78,14 +78,14 @@ def check_winner(board_state: jnp.ndarray, turn_count: jnp.ndarray) -> jnp.ndarr
             [[[1, 0, 0, 0], [0, 1, 0, 0], [0, 0, 1, 0], [0, 0, 0, 1]]],  # Diag
             [[[0, 0, 0, 1], [0, 0, 1, 0], [0, 1, 0, 0], [1, 0, 0, 0]]],  # Anti-Diag
         ],
-        dtype=jnp.int32,
+        dtype=jnp.float32,
     )
 
     player_one = jnp.where(board_state == 1, 1, 0)
     player_two = jnp.where(board_state == 2, 1, 0)
 
-    input_tensor_one = jnp.expand_dims(player_one, axis=1)
-    input_tensor_two = jnp.expand_dims(player_two, axis=1)
+    input_tensor_one = jnp.expand_dims(player_one, axis=1).astype(jnp.float32)
+    input_tensor_two = jnp.expand_dims(player_two, axis=1).astype(jnp.float32)
 
     one_output = jax.lax.conv_general_dilated(
         lhs=input_tensor_one,
@@ -99,8 +99,8 @@ def check_winner(board_state: jnp.ndarray, turn_count: jnp.ndarray) -> jnp.ndarr
         window_strides=(1, 1),
         padding=[(0, 3), (0, 3)],
     )
-    one_win = jnp.any(one_output == 4, axis=(1, 2, 3))
-    two_win = jnp.any(two_output == 4, axis=(1, 2, 3))
+    one_win = jnp.any(one_output == 4.0, axis=(1, 2, 3))
+    two_win = jnp.any(two_output == 4.0, axis=(1, 2, 3))
     winner = jnp.where(one_win, 1, jnp.where(two_win, 2, 0))
     return jnp.where((winner == 0) & (turn_count >= 42), 3, winner)
 
