@@ -18,7 +18,7 @@ MOMENTUM = 0.9
 
 
 def get_optimizer() -> optax.GradientTransformation:
-    learning_rate_schedule = optax.linear_schedule(2e-1, 2e-4, 100_000)
+    learning_rate_schedule = optax.linear_schedule(2e-2, 2e-5, 100_000)
 
     return optax.chain(
         optax.add_decayed_weights(WEIGHT_DECAY),
