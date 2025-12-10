@@ -1,5 +1,6 @@
 import argparse
 import glob
+import math
 import os
 import re
 import time
@@ -605,12 +606,26 @@ def run_loop(args):
         # Track files written during this interval
         trajectory_files = []
         games_played = 0
+        batches_done = 0
+        mcts_steps = 0
+        selfplay_start = time.perf_counter()
+        batches_target = math.ceil(args.games_per_checkpoint / batch_size)
+
+        def format_rate(rate: float, rate_label: str, inv_label: str) -> str:
+            if rate <= 0:
+                return f"{inv_label}=?"
+            return (
+                f"{rate_label}={rate:.2f}"
+                if rate >= 1.0
+                else f"{inv_label}={1.0 / rate:.2f}"
+            )
 
         # Self-play loop until we reach games_per_checkpoint
         pbar = tqdm(
-            total=args.games_per_checkpoint,
+            total=batches_target,
             desc="Self-play",
-            unit="games",
+            unit="batch",
+            bar_format="{l_bar}{bar}| {n_fmt}/{total_fmt} [{elapsed}<{remaining}] {postfix}",
         )
 
         inference_model = eqx.tree_inference(model, value=True)
@@ -631,6 +646,9 @@ def run_loop(args):
 
             # Play until all games in the batch are done
             while jnp.any(check_winner(board_state, turn_count) == 0):
+                # Count one step per run_mcts_search invocation
+                mcts_steps += 1
+
                 key, subkey = jax.random.split(key)
                 tree, best_action, board_state, sample = batched.run_mcts_search(
                     tree,
@@ -647,8 +665,16 @@ def run_loop(args):
                 game_history.append(jax.device_get(sample))
                 turn_count = jnp.count_nonzero(board_state, axis=(1, 2))
                 move_count += 1
-                pbar.set_postfix_str(
-                    f"batch {len(trajectory_files) + 1} | moves {move_count}/{max_moves}"
+                elapsed = max(time.perf_counter() - selfplay_start, 1e-8)
+                steps_per_sec = mcts_steps / elapsed
+                batches_per_sec = batches_done / elapsed
+                steps_display = format_rate(steps_per_sec, "steps/s", "sec/step")
+                batches_display = format_rate(batches_per_sec, "batches/s", "sec/batch")
+                pbar.set_postfix(
+                    batch=len(trajectory_files) + 1,
+                    moves=f"{move_count}/{max_moves}",
+                    steps=steps_display,
+                    batches=batches_display,
                 )
 
             # Process game history to set value targets
@@ -661,8 +687,11 @@ def run_loop(args):
             save_trajectories(processed_history, filename)
             trajectory_files.append(filename)
 
-            games_played += batch_size
-            pbar.update(batch_size)
+            remaining_games = args.games_per_checkpoint - games_played
+            batch_increment = min(batch_size, max(remaining_games, 0))
+            games_played += batch_increment
+            batches_done += 1
+            pbar.update(1)
 
         pbar.close()
 
