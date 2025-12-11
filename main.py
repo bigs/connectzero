@@ -1,5 +1,6 @@
 import argparse
 import glob
+import json
 import math
 import os
 import re
@@ -592,20 +593,57 @@ def run_loop(args):
     if opt_state is None:
         opt_state = optimizer.init(eqx.filter(model, eqx.is_array))
 
-    checkpoint_interval = 0
-    while True:
-        checkpoint_interval += 1
-        print(f"\n{'=' * 60}")
-        print(f"Starting checkpoint interval {checkpoint_interval}")
-        print(f"{'=' * 60}")
+    loop_state_path = os.path.join(args.checkpoint_dir, "loop_state.json")
+    loop_state = {}
 
-        # Create a new data subdirectory for this interval
-        data_subdir = get_next_data_subdir(args.data_dir)
-        print(f"Saving trajectories to: {data_subdir}")
+    if os.path.exists(loop_state_path):
+        try:
+            with open(loop_state_path, "r") as f:
+                loop_state = json.load(f)
+            print(f"Found loop state: {loop_state}")
+        except json.JSONDecodeError:
+            print("Failed to load loop state file, starting fresh.")
+
+    checkpoint_interval = loop_state.get("checkpoint_interval", 0)
+
+    while True:
+        # Determine if we are resuming a previous interval
+        stored_games_played = loop_state.get("games_played", 0)
+        stored_subdir = loop_state.get("data_subdir", None)
+
+        is_resuming = False
+        if stored_subdir and os.path.isdir(stored_subdir):
+            if stored_games_played < args.games_per_checkpoint:
+                is_resuming = True
+
+        if is_resuming:
+            data_subdir = stored_subdir
+            games_played = stored_games_played
+            print(
+                f"\nResuming interval {checkpoint_interval} with {games_played} games played."
+            )
+            print(f"Saving trajectories to: {data_subdir}")
+        else:
+            checkpoint_interval += 1
+            print(f"\n{'=' * 60}")
+            print(f"Starting checkpoint interval {checkpoint_interval}")
+            print(f"{'=' * 60}")
+
+            data_subdir = get_next_data_subdir(args.data_dir)
+            print(f"Saving trajectories to: {data_subdir}")
+            games_played = 0
+
+            # Initialize loop state
+            loop_state = {
+                "checkpoint_interval": checkpoint_interval,
+                "data_subdir": data_subdir,
+                "games_played": games_played,
+            }
+            with open(loop_state_path, "w") as f:
+                json.dump(loop_state, f)
 
         # Track files written during this interval
         trajectory_files = []
-        games_played = 0
         batches_done = 0
         mcts_steps = 0
         selfplay_start = time.perf_counter()
@@ -626,6 +664,7 @@ def run_loop(args):
             desc="Self-play",
             unit="batch",
             bar_format="{l_bar}{bar}| {n_fmt}/{total_fmt} [{elapsed}<{remaining}] {postfix}",
+            initial=math.ceil(games_played / batch_size),
         )
 
         inference_model = eqx.tree_inference(model, value=True)
@@ -693,6 +732,11 @@ def run_loop(args):
             batches_done += 1
             pbar.update(1)
 
+            # Update loop state
+            loop_state["games_played"] = games_played
+            with open(loop_state_path, "w") as f:
+                json.dump(loop_state, f)
+
         pbar.close()
 
         # Training phase with sliding window selection
@@ -725,6 +769,11 @@ def run_loop(args):
         hyperparams = {"num_blocks": len(model.blocks)}
         save(save_path, hyperparams, steps, model, state, opt_state)
         checkpoint_path = save_path
+
+        # Clear loop state as we finished this interval
+        if os.path.exists(loop_state_path):
+            os.remove(loop_state_path)
+            loop_state = {}
 
         print(
             f"Checkpoint interval {checkpoint_interval} complete. "

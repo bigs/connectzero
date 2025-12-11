@@ -12,3 +12,4 @@ wheels/
 # Data
 *.parquet
 *.eqx
+checkpoints/loop_state.json
