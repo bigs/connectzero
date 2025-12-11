@@ -6,6 +6,7 @@ import os
 import re
 import time
 from collections import deque
+from typing import NamedTuple
 
 import equinox as eqx
 import jax
@@ -73,7 +74,7 @@ def process_single_game_history(
 
 
 def process_batched_game_history(
-    history: list[TrainingSample],
+    history: list[TrainingSample] | TrainingSample,
     final_board_state: jnp.ndarray,
     final_turn_count: jnp.ndarray,
 ) -> list[TrainingSample]:
@@ -86,9 +87,11 @@ def process_batched_game_history(
     that had already finished (when batched games end at different times).
 
     Args:
-        history: List of TrainingSample with zeroed value_target.
-                Each sample has batched dimensions: board_state [B, 3, 6, 7],
-                policy_target [B, 7], value_target [B].
+        history: Either:
+            - A list of TrainingSample where each sample is batched:
+              board_state [B, 3, 6, 7], policy_target [B, 7], value_target [B].
+            - A single stacked TrainingSample with leading time dimension:
+              board_state [T, B, 3, 6, 7], policy_target [T, B, 7], value_target [T, B].
         final_board_state: [B, 6, 7] array, the final board states.
         final_turn_count: [B] array, the turn counts at game end.
 
@@ -96,18 +99,23 @@ def process_batched_game_history(
         List containing a single TrainingSample with all valid samples
         batched together (shape [num_valid, ...]).
     """
-    if not history:
-        return []
-
-    T = len(history)  # Number of time steps
     B = final_board_state.shape[0]  # Batch size
+    if isinstance(history, TrainingSample):
+        all_board_states = history.board_state
+        all_policy_targets = history.policy_target
+        T = all_board_states.shape[0]  # Number of time steps
+    else:
+        if not history:
+            return []
+        T = len(history)  # Number of time steps
+        # Stack history into tensors [T, B, ...]
+        all_board_states = jnp.stack(
+            [s.board_state for s in history]
+        )  # [T, B, 3, 6, 7]
+        all_policy_targets = jnp.stack([s.policy_target for s in history])  # [T, B, 7]
 
     # Compute winners for all games
     winners = check_winner(final_board_state, final_turn_count)  # [B]
-
-    # Stack history into tensors [T, B, ...]
-    all_board_states = jnp.stack([s.board_state for s in history])  # [T, B, 3, 6, 7]
-    all_policy_targets = jnp.stack([s.policy_target for s in history])  # [T, B, 7]
 
     # Create validity mask: sample at step t is valid only if t < final_turn_count[b]
     # This filters out samples collected after a game has already ended
@@ -151,6 +159,136 @@ def process_batched_game_history(
             value_target=jnp.array(valid_values, dtype=jnp.float32),
         )
     ]
+
+
+class BatchedSelfPlayState(NamedTuple):
+    key: jnp.ndarray
+    tree: batched.BatchedSearchTree
+    board_state: jnp.ndarray
+    turn_count: jnp.ndarray
+    t: jnp.ndarray
+    history_board_state: jnp.ndarray
+    history_policy_target: jnp.ndarray
+    history_value_target: jnp.ndarray
+    any_unfinished: jnp.ndarray
+
+
+@eqx.filter_jit
+def run_batched_selfplay_while_loop(
+    key: jnp.ndarray,
+    tree: batched.BatchedSearchTree,
+    board_state: jnp.ndarray,
+    num_simulations: int,
+    model_tuple: tuple[ConnectZeroModel, eqx.nn.State] | None,
+    temperature: float,
+    temperature_depth: int,
+    dirichlet_alpha: float,
+    dirichlet_epsilon: float,
+    max_moves: int = 42,
+) -> tuple[
+    jnp.ndarray,
+    batched.BatchedSearchTree,
+    jnp.ndarray,
+    jnp.ndarray,
+    TrainingSample,
+    jnp.ndarray,
+]:
+    """
+    Play a full batched self-play game using a JAX while_loop.
+
+    Returns:
+        key: Updated PRNG key
+        tree: Final tree
+        board_state: Final board state [B, 6, 7]
+        turn_count: Final turn counts [B]
+        history: Stacked TrainingSample with shapes:
+            board_state [max_moves, B, 3, 6, 7]
+            policy_target [max_moves, B, 7]
+            value_target [max_moves, B]
+        t: Number of executed moves (max over batch), scalar int32
+    """
+    turn_count = jnp.count_nonzero(board_state, axis=(1, 2))
+    B = board_state.shape[0]
+
+    history_board_state = jnp.zeros((max_moves, B, 3, 6, 7), dtype=jnp.float32)
+    history_policy_target = jnp.zeros((max_moves, B, 7), dtype=jnp.float32)
+    history_value_target = jnp.zeros((max_moves, B), dtype=jnp.float32)
+
+    any_unfinished = jnp.any(check_winner(board_state, turn_count) == 0)
+
+    init_state = BatchedSelfPlayState(
+        key=key,
+        tree=tree,
+        board_state=board_state,
+        turn_count=turn_count,
+        t=jnp.array(0, dtype=jnp.int32),
+        history_board_state=history_board_state,
+        history_policy_target=history_policy_target,
+        history_value_target=history_value_target,
+        any_unfinished=any_unfinished,
+    )
+
+    def cond_fun(state: BatchedSelfPlayState) -> jnp.ndarray:
+        return (state.t < max_moves) & state.any_unfinished
+
+    def body_fun(state: BatchedSelfPlayState) -> BatchedSelfPlayState:
+        key, subkey = jax.random.split(state.key)
+
+        tree, _best_action, board_state, sample = batched.run_mcts_search(
+            state.tree,
+            state.board_state,
+            num_simulations,
+            jnp.sqrt(2),
+            subkey,
+            model_tuple,
+            temperature,
+            temperature_depth,
+            dirichlet_alpha,
+            dirichlet_epsilon,
+        )
+
+        turn_count = jnp.count_nonzero(board_state, axis=(1, 2))
+
+        history_board_state = state.history_board_state.at[state.t].set(
+            sample.board_state
+        )
+        history_policy_target = state.history_policy_target.at[state.t].set(
+            sample.policy_target
+        )
+        history_value_target = state.history_value_target.at[state.t].set(
+            sample.value_target
+        )
+
+        any_unfinished = jnp.any(check_winner(board_state, turn_count) == 0)
+
+        return state._replace(
+            key=key,
+            tree=tree,
+            board_state=board_state,
+            turn_count=turn_count,
+            t=state.t + 1,
+            history_board_state=history_board_state,
+            history_policy_target=history_policy_target,
+            history_value_target=history_value_target,
+            any_unfinished=any_unfinished,
+        )
+
+    final_state = jax.lax.while_loop(cond_fun, body_fun, init_state)
+
+    history = TrainingSample(
+        board_state=final_state.history_board_state,
+        policy_target=final_state.history_policy_target,
+        value_target=final_state.history_value_target,
+    )
+
+    return (
+        final_state.key,
+        final_state.tree,
+        final_state.board_state,
+        final_state.turn_count,
+        history,
+        final_state.t,
+    )
 
 
 run_search_vmap = jax.vmap(
@@ -671,50 +809,46 @@ def run_loop(args):
         model_tuple = (inference_model, state)
 
         while games_played < args.games_per_checkpoint:
-            key, subkey = jax.random.split(key)
+            # Preserve previous behavior of consuming one split per batch
+            key, _ = jax.random.split(key)
 
             # Initialize game state for this batch
             board_state = jnp.zeros((batch_size, 6, 7), dtype=jnp.int32)
-            turn_count = jnp.count_nonzero(board_state, axis=(1, 2))
             tree = batched.BatchedSearchTree.init(
                 B=batch_size, N=num_simulations * 42 + 1, A=7
             )
-            game_history = []
-            move_count = 0
             max_moves = 42  # 6x7 board
 
-            # Play until all games in the batch are done
-            while jnp.any(check_winner(board_state, turn_count) == 0):
-                # Count one step per run_mcts_search invocation
-                mcts_steps += 1
-
-                key, subkey = jax.random.split(key)
-                tree, best_action, board_state, sample = batched.run_mcts_search(
+            # Play until all games in the batch are done (JAX while_loop)
+            key, tree, board_state, turn_count, game_history, steps_taken = (
+                run_batched_selfplay_while_loop(
+                    key,
                     tree,
                     board_state,
                     num_simulations,
-                    jnp.sqrt(2),
-                    subkey,
                     model_tuple,
                     args.temperature,
                     args.temperature_depth,
                     0.3,  # dirichlet_alpha
                     0.25,  # dirichlet_epsilon
+                    max_moves,
                 )
-                game_history.append(jax.device_get(sample))
-                turn_count = jnp.count_nonzero(board_state, axis=(1, 2))
-                move_count += 1
-                elapsed = max(time.perf_counter() - selfplay_start, 1e-8)
-                steps_per_sec = mcts_steps / elapsed
-                batches_per_sec = batches_done / elapsed
-                steps_display = format_rate(steps_per_sec, "steps/s", "sec/step")
-                batches_display = format_rate(batches_per_sec, "batches/s", "sec/batch")
-                pbar.set_postfix(
-                    batch=len(trajectory_files) + 1,
-                    moves=f"{move_count}/{max_moves}",
-                    steps=steps_display,
-                    batches=batches_display,
-                )
+            )
+
+            steps_taken_host = int(jax.device_get(steps_taken))
+            mcts_steps += steps_taken_host
+
+            elapsed = max(time.perf_counter() - selfplay_start, 1e-8)
+            steps_per_sec = mcts_steps / elapsed
+            batches_per_sec = batches_done / elapsed
+            steps_display = format_rate(steps_per_sec, "steps/s", "sec/step")
+            batches_display = format_rate(batches_per_sec, "batches/s", "sec/batch")
+            pbar.set_postfix(
+                batch=len(trajectory_files) + 1,
+                moves=f"{steps_taken_host}/{max_moves}",
+                steps=steps_display,
+                batches=batches_display,
+            )
 
             # Process game history to set value targets
             processed_history = process_batched_game_history(
