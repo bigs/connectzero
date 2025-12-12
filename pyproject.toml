@@ -24,12 +24,18 @@ project-includes = [
 ]
 
 [dependency-groups]
+cuda = [
+    "jax[cuda]>=0.8.1 ; sys_platform != 'darwin'",
+]
 dev = [
     "ipython>=9.7.0",
     "pylance>=0.39.0",
     "pyrefly>=0.42.3",
     "pytest>=9.0.1",
     "ruff>=0.14.6",
+]
+tpu = [
+    "jax[tpu]>=0.8.1 ; sys_platform != 'darwin'",
 ]
 
 [tool]
