@@ -29,6 +29,8 @@ from connectzero.game import (
 from connectzero.model import ConnectZeroModel, load, save
 from connectzero.train import get_optimizer, train_epoch, train_loop
 
+jax.config.update("jax_default_matmul_precision", "tensorfloat32")
+
 
 def process_single_game_history(
     history: list[TrainingSample],
