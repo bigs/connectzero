@@ -1,3 +1,4 @@
+from datetime import datetime
 from typing import NamedTuple
 
 import jax
@@ -255,7 +256,8 @@ def save_trajectories(samples: list[TrainingSample], filename: str):
 
     # Write to Parquet
     pq.write_table(table, filename)
-    tqdm.write(f"Saved {len(flat_data['board_state'])} samples to {filename}")
+    ts = datetime.now().isoformat(sep=" ", timespec="seconds")
+    tqdm.write(f"{ts} Saved {len(flat_data['board_state'])} samples to {filename}")
 
 
 def load_trajectories(filename: str) -> list[TrainingSample]:
