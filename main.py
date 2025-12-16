@@ -705,6 +705,125 @@ def run_train(args):
     )
 
 
+def _fmt_bytes(num_bytes: int) -> str:
+    units = ["B", "KiB", "MiB", "GiB", "TiB"]
+    x = float(num_bytes)
+    for u in units:
+        if x < 1024.0 or u == units[-1]:
+            return f"{x:.2f} {u}" if u != "B" else f"{int(x)} {u}"
+        x /= 1024.0
+    return f"{num_bytes} B"
+
+
+def _summarize_opt_state(opt_state) -> dict:
+    """Return a small, printable summary of an optax state pytree."""
+    leaves = jax.tree_util.tree_leaves(opt_state)
+    summary: dict[str, object] = {
+        "type": type(opt_state).__name__,
+        "num_leaves": len(leaves),
+        "num_array_leaves": 0,
+        "num_non_array_leaves": 0,
+        "scalar_int_leaves": [],
+        "array_dtypes": {},
+    }
+
+    for leaf in leaves:
+        is_array = hasattr(leaf, "shape") and hasattr(leaf, "dtype")
+        if not is_array:
+            summary["num_non_array_leaves"] = int(summary["num_non_array_leaves"]) + 1
+            continue
+
+        summary["num_array_leaves"] = int(summary["num_array_leaves"]) + 1
+        dtype = str(getattr(leaf, "dtype", "unknown"))
+        array_dtypes = summary["array_dtypes"]
+        assert isinstance(array_dtypes, dict)
+        array_dtypes[dtype] = int(array_dtypes.get(dtype, 0)) + 1
+
+        # Try to find a scalar int "count" leaf (common in some optax transforms).
+        try:
+            shape = tuple(leaf.shape)
+        except Exception:
+            shape = None
+        if shape == ():
+            try:
+                kind = leaf.dtype.kind  # type: ignore[attr-defined]
+            except Exception:
+                kind = None
+            if kind in ("i", "u"):
+                try:
+                    val = int(jax.device_get(leaf))
+                    scalar_list = summary["scalar_int_leaves"]
+                    assert isinstance(scalar_list, list)
+                    scalar_list.append(val)
+                except Exception:
+                    pass
+
+    return summary
+
+
+def run_meta(args, parser):
+    checkpoint_path = args.checkpoint_path
+    if not os.path.exists(checkpoint_path):
+        parser.error(f"Checkpoint not found: {checkpoint_path}")
+
+    st = os.stat(checkpoint_path)
+    print(f"checkpoint: {checkpoint_path}")
+    print(f"size: {_fmt_bytes(st.st_size)}")
+    print(f"mtime: {time.strftime('%Y-%m-%d %H:%M:%S', time.localtime(st.st_mtime))}")
+
+    # Read the JSON header line for fast metadata.
+    with open(checkpoint_path, "rb") as f:
+        header_line = f.readline().decode()
+    try:
+        hyperparams = json.loads(header_line)
+    except json.JSONDecodeError as e:
+        raise ValueError(
+            f"Checkpoint header is not valid JSON. First line: {header_line!r}"
+        ) from e
+
+    has_opt_state = bool(hyperparams.get("has_opt_state", False))
+    step = int(hyperparams.get("step", 0))
+    print(f"step: {step}")
+    print(f"has_opt_state: {has_opt_state}")
+
+    # Print remaining hyperparams (excluding our metadata keys).
+    extra = {k: v for k, v in hyperparams.items() if k not in ("step", "has_opt_state")}
+    if extra:
+        print("hyperparams:")
+        for k in sorted(extra.keys()):
+            print(f"  {k}: {extra[k]}")
+
+    if not has_opt_state:
+        return
+
+    if args.skip_opt_state:
+        print("opt_state: present (skipped deserialization; re-run without --skip-opt-state to summarize)")
+        return
+
+    optimizer = get_optimizer()
+    _model, _state, opt_state, loaded_step = load(
+        checkpoint_path, optimizer=optimizer
+    )
+    # `loaded_step` is the authoritative training step stored in the header.
+    if loaded_step != step:
+        print(f"note: header step={step} but deserialized step={loaded_step}")
+
+    if opt_state is None:
+        print("opt_state: expected present, but could not be deserialized (missing optimizer structure?)")
+        return
+
+    summary = _summarize_opt_state(opt_state)
+    print("opt_state:")
+    print(f"  type: {summary['type']}")
+    print(f"  leaves: {summary['num_leaves']} (arrays={summary['num_array_leaves']}, non-arrays={summary['num_non_array_leaves']})")
+    print(f"  dtypes: {summary['array_dtypes']}")
+    scalar_ints = summary.get("scalar_int_leaves", [])
+    if isinstance(scalar_ints, list) and scalar_ints:
+        uniq = sorted(set(int(x) for x in scalar_ints))
+        # Keep it compact; these are usually just small counters.
+        print(f"  scalar_int_leaves (possible counters): {uniq[:8]}{'...' if len(uniq) > 8 else ''}")
+
+
 def run_loop(args):
     """
     Run the combined self-play and training loop with a persistent model +
@@ -979,6 +1098,21 @@ def main():
         help="Training batch size (default: 8)",
     )
 
+    # Meta subcommand
+    meta_parser = subparsers.add_parser(
+        "meta", help="Print metadata about a checkpoint file"
+    )
+    meta_parser.add_argument(
+        "checkpoint_path",
+        type=str,
+        help="Path to a checkpoint (.eqx) file",
+    )
+    meta_parser.add_argument(
+        "--skip-opt-state",
+        action="store_true",
+        help="Only read the JSON header; do not deserialize optimizer state",
+    )
+
     # Simulate subcommand
     simulate_parser = subparsers.add_parser("simulate", help="Run MCTS simulation")
     simulate_parser.add_argument(
@@ -1092,6 +1226,8 @@ def main():
         run_initialize(args)
     elif args.command == "train":
         run_train(args)
+    elif args.command == "meta":
+        run_meta(args, parser)
     elif args.command == "loop":
         run_loop(args)
     else:
