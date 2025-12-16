@@ -20,10 +20,21 @@ LR_END = 2e-5
 LR_TRANSITION_STEPS = 100_000
 
 
-def get_optimizer() -> optax.GradientTransformation:
-    learning_rate_schedule = optax.linear_schedule(
-        LR_START, LR_END, LR_TRANSITION_STEPS
-    )
+def get_optimizer(scheduler_type: str = "linear") -> optax.GradientTransformation:
+    if scheduler_type == "linear":
+        learning_rate_schedule = optax.linear_schedule(
+            LR_START, LR_END, LR_TRANSITION_STEPS
+        )
+    elif scheduler_type == "cosine":
+        learning_rate_schedule = optax.warmup_cosine_decay_schedule(
+            init_value=1e-4,
+            peak_value=2e-2,
+            warmup_steps=10_000,
+            decay_steps=LR_TRANSITION_STEPS,
+            end_value=1e-5,
+        )
+    else:
+        raise ValueError(f"Invalid scheduler type: {scheduler_type}")
 
     return optax.chain(
         optax.add_decayed_weights(WEIGHT_DECAY),
@@ -130,7 +141,7 @@ def train_loop(
     Legacy training entrypoint. Loads checkpoint, runs a single training epoch,
     and saves a new checkpoint.
     """
-    optimizer = get_optimizer()
+    optimizer = get_optimizer(scheduler_type="cosine")
     model, state, opt_state, steps = load_model(checkpoint_path, optimizer=optimizer)
 
     data_files = sorted(glob.glob(data_pattern))

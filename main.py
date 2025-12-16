@@ -798,31 +798,37 @@ def run_meta(args, parser):
         return
 
     if args.skip_opt_state:
-        print("opt_state: present (skipped deserialization; re-run without --skip-opt-state to summarize)")
+        print(
+            "opt_state: present (skipped deserialization; re-run without --skip-opt-state to summarize)"
+        )
         return
 
-    optimizer = get_optimizer()
-    _model, _state, opt_state, loaded_step = load(
-        checkpoint_path, optimizer=optimizer
-    )
+    optimizer = get_optimizer("cosine")
+    _model, _state, opt_state, loaded_step = load(checkpoint_path, optimizer=optimizer)
     # `loaded_step` is the authoritative training step stored in the header.
     if loaded_step != step:
         print(f"note: header step={step} but deserialized step={loaded_step}")
 
     if opt_state is None:
-        print("opt_state: expected present, but could not be deserialized (missing optimizer structure?)")
+        print(
+            "opt_state: expected present, but could not be deserialized (missing optimizer structure?)"
+        )
         return
 
     summary = _summarize_opt_state(opt_state)
     print("opt_state:")
     print(f"  type: {summary['type']}")
-    print(f"  leaves: {summary['num_leaves']} (arrays={summary['num_array_leaves']}, non-arrays={summary['num_non_array_leaves']})")
+    print(
+        f"  leaves: {summary['num_leaves']} (arrays={summary['num_array_leaves']}, non-arrays={summary['num_non_array_leaves']})"
+    )
     print(f"  dtypes: {summary['array_dtypes']}")
     scalar_ints = summary.get("scalar_int_leaves", [])
     if isinstance(scalar_ints, list) and scalar_ints:
         uniq = sorted(set(int(x) for x in scalar_ints))
         # Keep it compact; these are usually just small counters.
-        print(f"  scalar_int_leaves (possible counters): {uniq[:8]}{'...' if len(uniq) > 8 else ''}")
+        print(
+            f"  scalar_int_leaves (possible counters): {uniq[:8]}{'...' if len(uniq) > 8 else ''}"
+        )
 
 
 def run_loop(args):
