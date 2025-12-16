@@ -15,15 +15,26 @@ from connectzero.model import save as save_model
 BATCH_SIZE = 8
 WEIGHT_DECAY = 10e-4
 MOMENTUM = 0.9
+LR_START = 2e-2
+LR_END = 2e-5
+LR_TRANSITION_STEPS = 100_000
 
 
 def get_optimizer() -> optax.GradientTransformation:
-    learning_rate_schedule = optax.linear_schedule(2e-2, 2e-5, 100_000)
+    learning_rate_schedule = optax.linear_schedule(
+        LR_START, LR_END, LR_TRANSITION_STEPS
+    )
 
     return optax.chain(
         optax.add_decayed_weights(WEIGHT_DECAY),
         optax.sgd(learning_rate_schedule, momentum=MOMENTUM),
     )
+
+
+def get_learning_rate(step: int) -> float:
+    """Compute the learning rate at a given training step (matches `get_optimizer`)."""
+    schedule = optax.linear_schedule(LR_START, LR_END, LR_TRANSITION_STEPS)
+    return float(jax.device_get(schedule(step)))
 
 
 def compute_loss(

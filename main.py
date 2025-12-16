@@ -27,7 +27,7 @@ from connectzero.game import (
     save_trajectories,
 )
 from connectzero.model import ConnectZeroModel, load, save
-from connectzero.train import get_optimizer, train_epoch, train_loop
+from connectzero.train import get_learning_rate, get_optimizer, train_epoch, train_loop
 
 jax.config.update("jax_default_matmul_precision", "tensorfloat32")
 
@@ -784,6 +784,7 @@ def run_meta(args, parser):
     has_opt_state = bool(hyperparams.get("has_opt_state", False))
     step = int(hyperparams.get("step", 0))
     print(f"step: {step}")
+    print(f"learning_rate: {get_learning_rate(step):.10g}")
     print(f"has_opt_state: {has_opt_state}")
 
     # Print remaining hyperparams (excluding our metadata keys).
