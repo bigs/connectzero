@@ -924,7 +924,7 @@ def run_loop(args):
     os.makedirs(args.checkpoint_dir, exist_ok=True)
     os.makedirs(args.data_dir, exist_ok=True)
 
-    optimizer = get_optimizer()
+    optimizer = get_optimizer(clip_grad_norm=1.0)
 
     checkpoint_path = find_latest_checkpoint(args.checkpoint_dir)
     if checkpoint_path:
