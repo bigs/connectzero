@@ -705,6 +705,87 @@ def run_train(args):
     )
 
 
+def _resolve_checkpoint_input(path_or_name: str, default_dir: str) -> str:
+    """
+    Resolve an input checkpoint arg that might be a full path or just a filename.
+
+    - If `path_or_name` includes a directory component (or is absolute), it is
+      treated as a path as-is.
+    - Otherwise, if it doesn't exist in CWD, fall back to `{default_dir}/{name}`.
+    """
+    if os.path.isabs(path_or_name) or os.path.dirname(path_or_name):
+        return path_or_name
+    if os.path.exists(path_or_name):
+        return path_or_name
+    return os.path.join(default_dir, path_or_name)
+
+
+def _resolve_checkpoint_output(path_or_name: str, default_dir: str) -> str:
+    """
+    Resolve an output checkpoint arg that might be a full path or just a filename.
+
+    - If `path_or_name` includes a directory component (or is absolute), it is
+      treated as a path as-is.
+    - Otherwise, it is written under `{default_dir}/{name}`.
+    """
+    if os.path.isabs(path_or_name) or os.path.dirname(path_or_name):
+        return path_or_name
+    return os.path.join(default_dir, path_or_name)
+
+
+def run_init_optimizer(args, parser):
+    default_checkpoint_dir = "./checkpoints"
+    input_path = _resolve_checkpoint_input(
+        args.input_checkpoint, default_checkpoint_dir
+    )
+    output_path = _resolve_checkpoint_output(
+        args.output_checkpoint, default_checkpoint_dir
+    )
+
+    if not os.path.exists(input_path):
+        parser.error(
+            f"Input checkpoint not found: {args.input_checkpoint!r} "
+            f"(resolved to {input_path})"
+        )
+
+    if os.path.abspath(input_path) == os.path.abspath(output_path):
+        parser.error("Input and output checkpoint paths must be different.")
+
+    # Load hyperparams header (we'll preserve it, but overwrite step/has_opt_state on save).
+    with open(input_path, "rb") as f:
+        header_line = f.readline().decode()
+    try:
+        hyperparams = json.loads(header_line)
+    except json.JSONDecodeError as e:
+        raise ValueError(
+            f"Checkpoint header is not valid JSON. First line: {header_line!r}"
+        ) from e
+
+    # Load the checkpoint model + state. We intentionally skip deserializing the old
+    # optimizer state; we're about to reinitialize it anyway.
+    model, state, _old_opt_state, step = load(input_path)
+
+    optimizer = get_optimizer(
+        scheduler_type=args.scheduler_type, clip_grad_norm=args.clip_grad_norm
+    )
+    opt_state = optimizer.init(eqx.filter(model, eqx.is_array))
+
+    # Ensure output directory exists.
+    out_dir = os.path.dirname(output_path)
+    if out_dir:
+        os.makedirs(out_dir, exist_ok=True)
+
+    save(output_path, dict(hyperparams), step, model, state, opt_state)
+    print(
+        f"Reinitialized optimizer and saved checkpoint:\n"
+        f"  input:  {input_path}\n"
+        f"  output: {output_path}\n"
+        f"  step: {step}\n"
+        f"  scheduler_type: {args.scheduler_type}\n"
+        f"  clip_grad_norm: {args.clip_grad_norm}"
+    )
+
+
 def _fmt_bytes(num_bytes: int) -> str:
     units = ["B", "KiB", "MiB", "GiB", "TiB"]
     x = float(num_bytes)
@@ -1120,6 +1201,35 @@ def main():
         help="Only read the JSON header; do not deserialize optimizer state",
     )
 
+    # Reinitialize optimizer subcommand
+    init_opt_parser = subparsers.add_parser(
+        "init-optimizer",
+        help="Load a checkpoint, reinitialize the optimizer state, and write a new checkpoint",
+    )
+    init_opt_parser.add_argument(
+        "input_checkpoint",
+        type=str,
+        help="Input checkpoint path or name under ./checkpoints",
+    )
+    init_opt_parser.add_argument(
+        "output_checkpoint",
+        type=str,
+        help="Output checkpoint path or name under ./checkpoints",
+    )
+    init_opt_parser.add_argument(
+        "--scheduler-type",
+        type=str,
+        default="cosine",
+        choices=["linear", "cosine"],
+        help='Optimizer LR scheduler type (default: "cosine")',
+    )
+    init_opt_parser.add_argument(
+        "--clip-grad-norm",
+        type=float,
+        default=1.0,
+        help="Global gradient norm clipping (default: 1.0)",
+    )
+
     # Simulate subcommand
     simulate_parser = subparsers.add_parser("simulate", help="Run MCTS simulation")
     simulate_parser.add_argument(
@@ -1235,6 +1345,8 @@ def main():
         run_train(args)
     elif args.command == "meta":
         run_meta(args, parser)
+    elif args.command == "init-optimizer":
+        run_init_optimizer(args, parser)
     elif args.command == "loop":
         run_loop(args)
     else:
