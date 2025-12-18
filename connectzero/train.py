@@ -20,7 +20,9 @@ LR_END = 2e-5
 LR_TRANSITION_STEPS = 100_000
 
 
-def get_optimizer(scheduler_type: str = "linear") -> optax.GradientTransformation:
+def get_optimizer(
+    scheduler_type: str = "linear", clip_grad_norm: float | None = None
+) -> optax.GradientTransformation:
     if scheduler_type == "linear":
         learning_rate_schedule = optax.linear_schedule(
             LR_START, LR_END, LR_TRANSITION_STEPS
@@ -28,13 +30,20 @@ def get_optimizer(scheduler_type: str = "linear") -> optax.GradientTransformatio
     elif scheduler_type == "cosine":
         learning_rate_schedule = optax.warmup_cosine_decay_schedule(
             init_value=1e-4,
-            peak_value=2e-2,
+            peak_value=1e-2,
             warmup_steps=10_000,
             decay_steps=LR_TRANSITION_STEPS,
             end_value=1e-5,
         )
     else:
         raise ValueError(f"Invalid scheduler type: {scheduler_type}")
+
+    if clip_grad_norm is not None:
+        return optax.chain(
+            optax.clip_by_global_norm(clip_grad_norm),
+            optax.add_decayed_weights(WEIGHT_DECAY),
+            optax.sgd(learning_rate_schedule, momentum=MOMENTUM),
+        )
 
     return optax.chain(
         optax.add_decayed_weights(WEIGHT_DECAY),
